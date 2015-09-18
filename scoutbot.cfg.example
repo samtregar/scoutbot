@@ -5,3 +5,4 @@ api_key=ddasdfagfgfh439870986787kjhdsahjgd6t3
 support_domain = techsupport.example.com
 max_wait_new_ticket = 600
 max_wait_response_or_close = 1200
+support_calendar_id = XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX@group.calendar.google.com

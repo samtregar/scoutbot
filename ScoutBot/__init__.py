@@ -1,14 +1,24 @@
-import os
-import helpscout
 from warnings import warn
 from time import sleep
-
-import urllib3
-urllib3.disable_warnings()
-
 from datetime import datetime, timedelta
 from ConfigParser import SafeConfigParser
 import dateutil.parser
+import os
+from pytz import timezone
+import re
+
+# HelpScout API
+import helpscout
+
+# Google Calendar API modules
+import httplib2
+from apiclient import discovery
+import oauth2client
+from oauth2client import client
+from oauth2client import tools
+
+CALENDAR_REFRESH_INTERVAL = timedelta(minutes=5)
+TZ = timezone('US/Pacific')
 
 # helper to deal with bizarre helpscout paging interface - you have to
 # call each method multiple times until it returns nothing.
@@ -44,6 +54,11 @@ def td_format(td_object):
                 strings.append("%s %ss" % (period_value, period_name))
                 
     return ", ".join(strings)
+
+def human_time(dt):
+    time = dt.strftime('%I:%M%P').lstrip('0')
+    time = re.sub(r':00', '', time)
+    return time
     
 class ScoutBot:
     def __init__(self, config_file='scoutbot.cfg'):
@@ -58,12 +73,17 @@ class ScoutBot:
                                                          'max_wait_new_ticket'))
         self.max_wait_response_or_close = int(config.get('scoutbot',
                                                          'max_wait_response_or_close'))
+        self.support_calendar_id        = config.get('scoutbot',
+                                                     'support_calendar_id')
 
         if self.hs_api_key is None:
             raise Exception("Missing api_key config value!")
 
         self.client = helpscout.Client()
         self.client.api_key = self.hs_api_key
+
+        self.calendar = []
+        self.calendar_refreshed_at = None
 
     def open_conversations(self, hours=6, status='active'):
         client = self.client
@@ -169,3 +189,80 @@ class ScoutBot:
 
     def log(self, msg):
         print "%s: %s" % (datetime.now(), msg)
+
+    def support_now(self):
+        cal = self.refresh_support_calendar()
+        now = datetime.now(tz=TZ)
+        for c in cal:
+            if now >= c[0] and now <= c[1]:
+                return "%s is on support now." % (c[2],)
+        return "Nobody is on support now!"
+
+    def support_day(self, offset=0):
+        cal = self.refresh_support_calendar()
+        now = datetime.now(tz=TZ) + timedelta(days=offset)
+
+        today = []
+        for c in cal:
+            if now.date() == c[0].date():
+                today.append("%s is on from %s to %s %s %s " % \
+                             (c[2],
+                              human_time(c[0]),
+                              human_time(c[1]),
+                              c[0].tzname(),
+                              "%d day(s) from now" % \
+                                offset if offset else "today"))
+
+        if len(today):
+            return "\n".join(today)
+        return "Nobody is on support %s!" % \
+               ("%d day(s) from now" % offset if offset else "today")
+
+    # pull a fresh calendar from Google periodically
+    def refresh_support_calendar(self, use_cache=True):
+        if (use_cache and
+            len(self.calendar) and
+            self.calendar_refreshed_at and
+            (datetime.utcnow() - self.calendar_refreshed_at) >
+              CALENDAR_REFRESH_INTERVAL):
+            return self.calendar
+    
+        SCOPES             = 'https://www.googleapis.com/auth/calendar.readonly'
+        CLIENT_SECRET_FILE = 'google_api_client_secret.json'
+        APPLICATION_NAME   = 'ScoutBot'
+
+        credential_path    = 'google_api_credentials.json'
+        store              = oauth2client.file.Storage(credential_path)
+        credentials        = store.get()
+        if not credentials:
+            raise Exception("Please setup a valid Google API credentials "
+                            "file in google_api_credentials.json.")
+        
+        http               = credentials.authorize(httplib2.Http())
+        service            = discovery.build('calendar', 'v3', http=http)
+
+        start = datetime.utcnow() - timedelta(days = 1)
+        end = start + timedelta(days = 14)
+        
+        eventsResult = service.events().list(
+            calendarId=self.support_calendar_id,
+            timeMin=start.isoformat() + "Z",
+            timeMax=end.isoformat() + "Z",
+            singleEvents=True,
+            orderBy='startTime').execute()
+        events = eventsResult.get('items', [])
+
+        self.calendar = []
+        for event in events:
+            start = dateutil.parser.parse(
+                event['start'].get('dateTime',
+                                   event['start'].get('date')))
+            start = start.astimezone(tz=TZ)
+            end = dateutil.parser.parse(
+                event['end'].get('dateTime',
+                                 event['start'].get('date')))
+            end = end.astimezone(tz=TZ)
+
+            self.calendar.append((start, end, event['summary']))
+        self.calendar_refreshed_at = datetime.utcnow()
+        return self.calendar
