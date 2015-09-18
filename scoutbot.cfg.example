@@ -1,0 +1,7 @@
+[helpscout]
+api_key=ddasdfagfgfh439870986787kjhdsahjgd6t3
+
+[scoutbot]
+support_domain = techsupport.example.com
+max_wait_new_ticket = 600
+max_wait_response_or_close = 1200
