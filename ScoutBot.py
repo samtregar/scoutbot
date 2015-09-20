@@ -27,7 +27,6 @@ CALENDAR_REFRESH_INTERVAL = timedelta(minutes=5)
 TZ = timezone('US/Pacific')
 
 HELPSCOUT_SCAN_INTERVAL = timedelta(minutes=1)
-
 HELPSCOUT_TIMEOUT = 5
 
 def text2int(textnum, numwords={}):
@@ -320,7 +319,7 @@ class ScoutBot:
         for c in cal:
             if now >= c[0] and now <= c[1]:
                 return "%s is on support now." % (c[2],)
-        return "Nobody is on support now!"
+        return "Nobody is on support now! :fire::fire::fire:"
 
     def support_day(self, offset=0):
         cal = self.refresh_support_calendar()
@@ -352,6 +351,8 @@ class ScoutBot:
             (datetime.utcnow() - self.calendar_refreshed_at) >
               CALENDAR_REFRESH_INTERVAL):
             return self.calendar
+
+        self.log("*** Refreshing support calendar...")
     
         SCOPES             = 'https://www.googleapis.com/auth/calendar.readonly'
         CLIENT_SECRET_FILE = 'google_api_client_secret.json'
