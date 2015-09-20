@@ -1,11 +1,14 @@
 from warnings import warn
-from time import sleep
+from time import sleep, time
 from datetime import datetime, timedelta
 from ConfigParser import SafeConfigParser
 import dateutil.parser
 import os
 from pytz import timezone
 import re
+import json
+import signal
+import sys
 
 # HelpScout API
 import helpscout
@@ -16,6 +19,9 @@ from apiclient import discovery
 import oauth2client
 from oauth2client import client
 from oauth2client import tools
+
+# slackbot stuff
+from slackclient import SlackClient
 
 CALENDAR_REFRESH_INTERVAL = timedelta(minutes=5)
 TZ = timezone('US/Pacific')
@@ -59,6 +65,27 @@ def human_time(dt):
     time = dt.strftime('%I:%M%P').lstrip('0')
     time = re.sub(r':00', '', time)
     return time
+
+def timeout(func, args=(), kwargs={}, timeout_duration=1, default=None):
+    import signal
+
+    class TimeoutError(Exception):
+        pass
+
+    def handler(signum, frame):
+        raise TimeoutError()
+
+    # set the timeout handler
+    signal.signal(signal.SIGALRM, handler) 
+    signal.alarm(timeout_duration)
+    try:
+        result = func(*args, **kwargs)
+    except TimeoutError as exc:
+        result = default
+    finally:
+        signal.alarm(0)
+
+    return result
     
 class ScoutBot:
     def __init__(self, config_file='scoutbot.cfg'):
@@ -75,6 +102,16 @@ class ScoutBot:
                                                          'max_wait_response_or_close'))
         self.support_calendar_id        = config.get('scoutbot',
                                                      'support_calendar_id')
+        self.slack_api_key              = config.get('slack', 'api_key')
+        self.slack_bot_name             = config.get('slack', 'bot_name')
+        self.slack_last_ping            = 0
+        self.slack_stack                = []
+        self.slack_connected            = False
+
+        channels = json.loads(config.get('slack', 'channels'))
+        self.slack_channels = channels
+        log_channels = json.loads(config.get('slack', 'log_channels'))
+        self.slack_log_channels = log_channels
 
         if self.hs_api_key is None:
             raise Exception("Missing api_key config value!")
@@ -84,6 +121,13 @@ class ScoutBot:
 
         self.calendar = []
         self.calendar_refreshed_at = None
+
+        # is this too rude?  Maybe weird if ScoutBot gets used by
+        # other code...
+        def signal_handler(signal, frame):
+            print("\nExiting SlackBot.  Thank you for playing.\n")
+            sys.exit(0)
+        signal.signal(signal.SIGINT, signal_handler)
 
     def open_conversations(self, hours=6, status='active'):
         client = self.client
@@ -144,42 +188,58 @@ class ScoutBot:
         data['last_client_msg_at'] = last_client_msg_at
         if data['new']:
             data['needs_reply_or_close'] = True
+        elif data['last_client_msg_at'] is None:
+            # we're talking to ourselves now, great
+            data['needs_reply_or_close'] = False
         else:
             data['needs_reply_or_close'] = last_client_msg_at > last_support_msg_at
-        data['wait_time'] = datetime.utcnow() - data['last_client_msg_at']
+        data['wait_time'] = datetime.utcnow() - (data['last_client_msg_at'] if data['last_client_msg_at'] else datetime.utcnow())
         
         return data
 
-    def watch(self):
+    def watch(self, once=False):
         while True:
-            self.log("*** Scanning for conversations...")
-            tickets = self.open_conversations()
-            for ticket in tickets:
-                if ticket['new']:
-                    self.log("*** [%s] %s => new and unclaimed %s" % \
-                             (ticket['num'],
-                              ticket['subject'],
-                              td_format(ticket['wait_time'])))
-                    if ticket['wait_time'].total_seconds() > self.max_wait_new_ticket:
-                        self.alert_support(ticket)
-                    if ticket['wait_time'].total_seconds() > (self.max_wait_new_ticket * 2):
-                        self.alert_everyone(ticket)
-                elif ticket['needs_reply_or_close']:
-                    self.log("*** [%s] %s => needs response of close %s" % \
-                             (ticket['num'],
-                              ticket['subject'],
-                              td_format(ticket['wait_time'])))
-                    if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
-                        self.alert_support(ticket)
-                    if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
-                        self.alert_everyone(ticket)
-
-                else:
-                    self.log("+ [%s] %s => handled" % \
-                             (ticket['num'],
-                              ticket['subject']))
-
+            self.scan_conversations()
+            if once:
+                return
             sleep(10)
+            
+    def scan_conversations(self):
+        self.log("*** Scanning for conversations...")
+        tickets = timeout(lambda: self.open_conversations(),
+                          timeout_duration=10,
+                          default=None)
+        if tickets is None:
+            self.log("*** Timed out looking for conversation...")
+            return
+
+        for ticket in tickets:
+            if ticket['new']:
+                self.log("*** [%s] %s => new and unclaimed %s" % \
+                         (ticket['num'],
+                          ticket['subject'],
+                          td_format(ticket['wait_time'])))
+                if ticket['wait_time'].total_seconds() > self.max_wait_new_ticket:
+                    self.alert_support(ticket)
+
+                if ticket['wait_time'].total_seconds() > (self.max_wait_new_ticket * 2):
+                    self.alert_everyone(ticket)
+
+            elif ticket['needs_reply_or_close']:
+                self.log("*** [%s] %s => needs response of close %s" % \
+                         (ticket['num'],
+                        ticket['subject'],
+                          td_format(ticket['wait_time'])))
+                if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
+                    self.alert_support(ticket)
+                if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
+                    self.alert_everyone(ticket)
+
+            else:
+                self.log("+ [%s] %s => handled" % \
+                         (ticket['num'],
+                          ticket['subject']))
+
 
     def alert_support(self, ticket):
         self.log("+++ CALLING FOR HELP!!! +++")
@@ -188,6 +248,8 @@ class ScoutBot:
         self.log("+++ CALLING FOR HELP FROM EVERYONE!!! +++")
 
     def log(self, msg):
+        if self.slack_connected:
+            self.slackbot_log(msg)
         print "%s: %s" % (datetime.now(), msg)
 
     def support_now(self):
@@ -266,3 +328,52 @@ class ScoutBot:
             self.calendar.append((start, end, event['summary']))
         self.calendar_refreshed_at = datetime.utcnow()
         return self.calendar
+
+    def slackbot(self):
+        self.sc = SlackClient(self.slack_api_key)
+
+        if self.sc.rtm_connect():
+            self.slack_connected = True
+            while True:
+                msg = self.sc.rtm_read()
+                self.slackbot_input(msg)
+                self.slackbot_output()
+                self.slackbot_autoping()
+                self.watch(once=True)
+                sleep(1)
+        else:
+            print "Connection Failed, invalid token?"
+
+    def slackbot_input(self, msgs):
+        for msg in msgs:
+            self.slackbot_handle(msg)
+
+    def slackbot_handle(self, msg):
+        msg_type = msg.get('type', "")
+        text = msg.get('text', "")
+        
+        if type == "message" and "cal" in text:
+            self.slackbot_log("Someone said: %r" % msg)
+
+    def slackbot_broadcast(self, msg):
+        for channel in self.slack_channels:
+            self.slack_stack.append((channel, msg))
+
+    def slackbot_log(self, msg):
+        for channel in self.slack_log_channels:
+            self.slack_stack.append((channel, msg))
+
+    def slackbot_output(self):
+        while len(self.slack_stack):
+            msg = self.slack_stack.pop(0)
+            channel = self.sc.server.channels.find(msg[0])
+            if not channel:
+                raise Exception("Could not find channel for msg %r" % (msg))
+            channel.send_message(msg[1])
+
+    def slackbot_autoping(self):
+        #hardcode the interval to 3 seconds
+        now = int(time())
+        if now > self.slack_last_ping + 3:
+            self.sc.server.ping()
+            self.slack_last_ping = now
