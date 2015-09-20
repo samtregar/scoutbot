@@ -26,9 +26,44 @@ from slackclient import SlackClient
 CALENDAR_REFRESH_INTERVAL = timedelta(minutes=5)
 TZ = timezone('US/Pacific')
 
+HELPSCOUT_SCAN_INTERVAL = timedelta(minutes=1)
+
+HELPSCOUT_TIMEOUT = 5
+
+def text2int(textnum, numwords={}):
+    if not numwords:
+      units = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+        "sixteen", "seventeen", "eighteen", "nineteen",
+      ]
+
+      tens = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+
+      scales = ["hundred", "thousand", "million", "billion", "trillion"]
+
+      numwords["and"] = (1, 0)
+      for idx, word in enumerate(units):    numwords[word] = (1, idx)
+      for idx, word in enumerate(tens):     numwords[word] = (1, idx * 10)
+      for idx, word in enumerate(scales):   numwords[word] = (10 ** (idx * 3 or 2), 0)
+
+    current = result = 0
+    for word in textnum.split():
+        if word not in numwords:
+          raise Exception("Illegal word: " + word)
+
+        scale, increment = numwords[word]
+        current = current * scale + increment
+        if scale > 100:
+            result += current
+            current = 0
+
+    return result + current
+
+
 # helper to deal with bizarre helpscout paging interface - you have to
 # call each method multiple times until it returns nothing.
-def helpscount_pager(meth, *args, **kwargs):
+def helpscout_pager(meth, *args, **kwargs):
     while True:
         items = meth(*args, **kwargs)
         if items is None:
@@ -66,6 +101,7 @@ def human_time(dt):
     time = re.sub(r':00', '', time)
     return time
 
+# a generic timeout wrapper
 def timeout(func, args=(), kwargs={}, timeout_duration=1, default=None):
     import signal
 
@@ -94,6 +130,9 @@ class ScoutBot:
 
         self.hs_api_key                 = config.get('helpscout',
                                                      'api_key')
+        self.helpscout_current_tickets  = None
+        self.last_helpscout_scan        = datetime.utcnow() - \
+                                          HELPSCOUT_SCAN_INTERVAL
         self.support_domain             = config.get('scoutbot',
                                                      'support_domain')
         self.max_wait_new_ticket        = int(config.get('scoutbot',
@@ -138,15 +177,15 @@ class ScoutBot:
         client.clearstate()
         
         results = []
-        for mailbox in helpscount_pager(client.mailboxes):
+        for mailbox in helpscout_pager(client.mailboxes):
             # look back up to 6 hours by default
             start_date = datetime.utcnow() - timedelta(hours = hours)
             start_date = start_date.replace(microsecond=0).isoformat() + 'Z'
             
-            for conv in helpscount_pager(client.conversations_for_mailbox,
-                                         mailbox.id,
-                                         status=status,
-                                         modifiedSince=start_date):
+            for conv in helpscout_pager(client.conversations_for_mailbox,
+                                        mailbox.id,
+                                        status=status,
+                                        modifiedSince=start_date):
                 results.append(self.parse_conversation(conv))
         return results
 
@@ -203,15 +242,38 @@ class ScoutBot:
             if once:
                 return
             sleep(10)
-            
+
+    def helpscout_status(self):
+        if not self.helpscout_current_tickets:
+            return "Huh, not sure.  I might be having trouble reaching helpscout. Please find @sam and ask him to fix me."
+
+        summary = []
+        for ticket in self.helpscout_current_tickets:
+            if ticket['new']:
+                summary.append("[%s] %s => new and unclaimed %s." % \
+                               (ticket['num'],
+                                ticket['subject'],
+                                td_format(ticket['wait_time'])))
+            elif ticket['needs_reply_or_close']:
+                summary.append("[%s] %s => needs response or close %s." % \
+                               (ticket['num'],
+                                ticket['subject'],
+                                td_format(ticket['wait_time'])))
+            else:
+                summary.append("[%s] %s => handled." % \
+                         (ticket['num'],
+                          ticket['subject']))
+        return "\n".join(summary)
+    
     def scan_conversations(self):
         self.log("*** Scanning for conversations...")
         tickets = timeout(lambda: self.open_conversations(),
-                          timeout_duration=10,
+                          timeout_duration=HELPSCOUT_TIMEOUT,
                           default=None)
         if tickets is None:
             self.log("*** Timed out looking for conversation...")
             return
+        self.helpscout_current_tickets = tickets
 
         for ticket in tickets:
             if ticket['new']:
@@ -276,6 +338,8 @@ class ScoutBot:
                                 offset if offset else "today"))
 
         if len(today):
+            today = [re.sub(r'1 day\(s\) from now', 'tomorrow', x) \
+                     for x in today]
             return "\n".join(today)
         return "Nobody is on support %s!" % \
                ("%d day(s) from now" % offset if offset else "today")
@@ -334,12 +398,21 @@ class ScoutBot:
 
         if self.sc.rtm_connect():
             self.slack_connected = True
+
+            # need this so I can scan for messages @me
+            self.slack_bot_user_id = self.sc.server.users.find(
+                self.slack_bot_name).id
+
             while True:
                 msg = self.sc.rtm_read()
                 self.slackbot_input(msg)
                 self.slackbot_output()
                 self.slackbot_autoping()
-                self.watch(once=True)
+
+                if ((datetime.utcnow() - self.last_helpscout_scan) >
+                    HELPSCOUT_SCAN_INTERVAL):
+                    self.last_helpscout_scan = datetime.utcnow()
+                    self.watch(once=True)
                 sleep(1)
         else:
             print "Connection Failed, invalid token?"
@@ -351,9 +424,39 @@ class ScoutBot:
     def slackbot_handle(self, msg):
         msg_type = msg.get('type', "")
         text = msg.get('text', "")
-        
-        if type == "message" and "cal" in text:
-            self.slackbot_log("Someone said: %r" % msg)
+
+        if msg_type == "message":
+            if (not re.search(r'\b%s\b' % self.slack_bot_name, text, re.I) and
+                not re.search(r'<@%s>' % self.slack_bot_user_id, text, re.I)):
+                return
+
+            if re.search(r'\bsupport\b', text, re.I):
+                days_since = re.search(r'\b(\w+)\s+days?\b', text, re.I)
+                if days_since:
+                    days = int(days_since.group(1)) if \
+                           re.match(r'\d+', days_since.group(1)) else \
+                           text2int(days_since.group(1))
+                    if days:
+                        self.slackbot_reply(msg, self.support_day(offset=days))
+                        return
+
+            if re.search(r'\bon\s+support\b', text, re.I) and \
+               re.search(r'\bnow\b', text, re.I):
+                self.slackbot_reply(msg, self.support_now())
+                return
+
+            if re.search(r'\bsupport\b', text, re.I) and \
+               re.search(r'\btomorrow\b', text, re.I):
+                self.slackbot_reply(msg, self.support_day(offset=1))
+                return
+
+            if re.search(r'\bhelpscout\b', text, re.I) and \
+               re.search(r'\bstatus\b', text, re.I):
+                self.slackbot_reply(msg, self.helpscout_status())
+                return
+
+    def slackbot_reply(self, msg, response):
+        self.slack_stack.append((msg['channel'], response))
 
     def slackbot_broadcast(self, msg):
         for channel in self.slack_channels:
