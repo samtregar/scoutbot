@@ -23,11 +23,13 @@ from oauth2client import tools
 # slackbot stuff
 from slackclient import SlackClient
 
-CALENDAR_REFRESH_INTERVAL = timedelta(minutes=5)
+CALENDAR_REFRESH_INTERVAL = timedelta(minutes=10)
 TZ = timezone('US/Pacific')
 
 HELPSCOUT_SCAN_INTERVAL = timedelta(minutes=1)
-HELPSCOUT_TIMEOUT = 5
+HELPSCOUT_TIMEOUT = 30
+
+CALENDAR_SCAN_INTERVAL = timedelta(minutes=5)
 
 def text2int(textnum, numwords={}):
     if not numwords:
@@ -64,10 +66,10 @@ def text2int(textnum, numwords={}):
 # call each method multiple times until it returns nothing.
 def helpscout_pager(meth, *args, **kwargs):
     while True:
-        items = meth(*args, **kwargs)
-        if items is None:
+        page = meth(*args, **kwargs)
+        if page is None or page.items is None or len(page.items) == 0:
             return
-        for item in items:
+        for item in page.items:
             yield item
 
 
@@ -140,6 +142,8 @@ class ScoutBot:
                                                          'max_wait_response_or_close'))
         self.support_calendar_id        = config.get('scoutbot',
                                                      'support_calendar_id')
+        self.last_calender_scan        = datetime.utcnow() - \
+                                         CALENDAR_SCAN_INTERVAL
         self.slack_api_key              = config.get('slack', 'api_key')
         self.slack_bot_name             = config.get('slack', 'bot_name')
         self.slack_last_ping            = 0
@@ -167,7 +171,7 @@ class ScoutBot:
             sys.exit(0)
         signal.signal(signal.SIGINT, signal_handler)
 
-    def open_conversations(self, hours=6, status='active'):
+    def open_conversations(self, hours=24, status='active'):
         client = self.client
 
         # this API wrapper has the wackiest paging system...  Gotta
@@ -180,7 +184,7 @@ class ScoutBot:
             # look back up to 6 hours by default
             start_date = datetime.utcnow() - timedelta(hours = hours)
             start_date = start_date.replace(microsecond=0).isoformat() + 'Z'
-            
+
             for conv in helpscout_pager(client.conversations_for_mailbox,
                                         mailbox.id,
                                         status=status,
@@ -246,30 +250,26 @@ class ScoutBot:
         if not self.helpscout_current_tickets:
             return "Huh, not sure.  I might be having trouble reaching helpscout. Please find @sam and ask him to fix me."
 
-        summary = []
+        summary = ["Currently active tickets modified within 24 hours:"]
         for ticket in self.helpscout_current_tickets:
             if ticket['new']:
-                summary.append("[%s] %s => new and unclaimed %s." % \
-                               (ticket['num'],
-                                ticket['subject'],
-                                td_format(ticket['wait_time'])))
+                summary.append("[<{url}|#{num}>] {subject} => new and unclaimed {wait_time}.".format(**ticket))
             elif ticket['needs_reply_or_close']:
-                summary.append("[%s] %s => needs response or close %s." % \
-                               (ticket['num'],
-                                ticket['subject'],
-                                td_format(ticket['wait_time'])))
+                summary.append("[<{url}|#{num}>] {subject} => *needs* response or close {wait_time}.".format(**ticket))
             else:
-                summary.append("[%s] %s => handled." % \
-                         (ticket['num'],
-                          ticket['subject']))
+                summary.append("[<{url}|#{num}>] {subject} => handled.".format(**ticket))
+
+        if len(summary) == 1:
+            summary.append("None!")
+
         return "\n".join(summary)
     
     def scan_conversations(self):
         self.log("*** Scanning for conversations...")
         tickets = timeout(lambda: self.open_conversations(),
                           timeout_duration=HELPSCOUT_TIMEOUT,
-                          default=None)
-        if tickets is None:
+                          default='TIMEOUT')
+        if tickets == 'TIMEOUT':
             self.log("*** Timed out looking for conversation...")
             return
         self.helpscout_current_tickets = tickets
@@ -287,7 +287,7 @@ class ScoutBot:
                     self.alert_everyone(ticket)
 
             elif ticket['needs_reply_or_close']:
-                self.log("*** [%s] %s => needs response of close %s" % \
+                self.log("*** [%s] %s => needs response or close %s" % \
                          (ticket['num'],
                         ticket['subject'],
                           td_format(ticket['wait_time'])))
@@ -303,22 +303,30 @@ class ScoutBot:
 
 
     def alert_support(self, ticket):
-        self.log("+++ CALLING FOR HELP!!! +++")
+        user =  self.support_now(just_name=True)
+        if user:
+            self.log("+++ CALLING FOR HELP ON %s FROM %s +++" % (ticket['num'], user))
+        else:
+            self.alert_everyone(ticket)
 
     def alert_everyone(self, ticket):
-        self.log("+++ CALLING FOR HELP FROM EVERYONE!!! +++")
+        self.log("+++ CALLING FOR HELP FROM EVERYONE ON %s!!! +++" % (ticket['num'],))
 
     def log(self, msg):
         if self.slack_connected:
             self.slackbot_log(msg)
         print "%s: %s" % (datetime.now(), msg)
 
-    def support_now(self):
+    def support_now(self, just_name=False):
         cal = self.refresh_support_calendar()
         now = datetime.now(tz=TZ)
         for c in cal:
             if now >= c[0] and now <= c[1]:
+                if just_name:
+                    return c[2]
                 return "%s is on support now." % (c[2],)
+        if just_name:
+            return None
         return "Nobody is on support now! :fire::fire::fire:"
 
     def support_day(self, offset=0):
@@ -343,12 +351,40 @@ class ScoutBot:
         return "Nobody is on support %s!" % \
                ("%d day(s) from now" % offset if offset else "today")
 
+    def slack_name_for_full_name(self, orig):
+        if not self.slack_connected or not self.slack_user_names:
+            return orig
+
+        full = orig.lower()
+        parts = re.split(r'\W+', full)
+
+        # look for a match on first name
+        if parts[0] in self.slack_user_names:
+            return "<@%s>" % (self.slack_user_names[parts[0]],)
+
+        # look for initials
+        initials = ''.join([p[0] for p in parts])
+        if initials in self.slack_user_names:
+            return "<@%s>" % (self.slack_user_names[initials],)
+
+        # look for the case where someone uses a three-initial handle
+        # but only lists their first and last on the calendar...  Lame.
+        if len(parts) == 2:
+            import string
+            for middle in string.ascii_lowercase:
+                initials = parts[0][0] + middle + parts[1][0]
+                if initials in self.slack_user_names:
+                    return "<@%s>" % (self.slack_user_names[initials],)
+
+        # failure!
+        return orig
+
     # pull a fresh calendar from Google periodically
     def refresh_support_calendar(self, use_cache=True):
         if (use_cache and
             len(self.calendar) and
             self.calendar_refreshed_at and
-            (datetime.utcnow() - self.calendar_refreshed_at) >
+            (datetime.utcnow() - self.calendar_refreshed_at) <
               CALENDAR_REFRESH_INTERVAL):
             return self.calendar
 
@@ -390,9 +426,18 @@ class ScoutBot:
                                  event['start'].get('date')))
             end = end.astimezone(tz=TZ)
 
-            self.calendar.append((start, end, event['summary']))
+            self.calendar.append((start, end, self.slack_name_for_full_name(event['summary'])))
+
         self.calendar_refreshed_at = datetime.utcnow()
         return self.calendar
+
+    def _index_slack_names(self):
+        # index user IDs by name and real_name to try to match up
+        # support shift names
+        self.slack_user_names = {}
+        for user in self.sc.server.users:
+            self.slack_user_names[user.name.lower()] = user.id
+            self.slack_user_names[user.real_name.lower()] = user.id
 
     def slackbot(self):
         self.sc = SlackClient(self.slack_api_key)
@@ -404,6 +449,8 @@ class ScoutBot:
             self.slack_bot_user_id = self.sc.server.users.find(
                 self.slack_bot_name).id
 
+            self._index_slack_names()
+
             while True:
                 msg = self.sc.rtm_read()
                 self.slackbot_input(msg)
@@ -414,6 +461,12 @@ class ScoutBot:
                     HELPSCOUT_SCAN_INTERVAL):
                     self.last_helpscout_scan = datetime.utcnow()
                     self.watch(once=True)
+
+                if ((datetime.utcnow() - self.last_calender_scan) >
+                    CALENDAR_SCAN_INTERVAL):
+                    self.last_calender_scan = datetime.utcnow()
+                    self.refresh_support_calendar()
+
                 sleep(1)
         else:
             print "Connection Failed, invalid token?"
@@ -446,6 +499,11 @@ class ScoutBot:
                 self.slackbot_reply(msg, self.support_now())
                 return
 
+            if re.search(r'\bon\s+support\b', text, re.I) and \
+               re.search(r'\btoday\b', text, re.I):
+                self.slackbot_reply(msg, self.support_day())
+                return
+
             if re.search(r'\bsupport\b', text, re.I) and \
                re.search(r'\btomorrow\b', text, re.I):
                 self.slackbot_reply(msg, self.support_day(offset=1))
@@ -473,7 +531,9 @@ class ScoutBot:
             channel = self.sc.server.channels.find(msg[0])
             if not channel:
                 raise Exception("Could not find channel for msg %r" % (msg))
-            channel.send_message(msg[1])
+
+            self.sc.server.api_call('chat.postMessage', channel=channel.id, text=msg[1], username=self.slack_bot_name, as_user=True)
+            # channel.send_message(msg[1])
 
     def slackbot_autoping(self):
         #hardcode the interval to 3 seconds
