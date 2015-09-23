@@ -476,12 +476,24 @@ class ScoutBot:
             self.slackbot_handle(msg)
 
     def slackbot_handle(self, msg):
-        msg_type = msg.get('type', "")
-        text = msg.get('text', "")
+        msg_type   = msg.get("type", "")
+        text       = msg.get("text", "")
+        channel_id = msg.get("channel", "")
+        user_id    = msg.get("user", "")
 
+        # print repr(msg) + "\n"
+    
         if msg_type == "message":
+            # if it mentions me or it's in direct-message channel (is
+            # there a better way to do that than look at channel ID
+            # directly?)
             if (not re.search(r'\b%s\b' % self.slack_bot_name, text, re.I) and
-                not re.search(r'<@%s>' % self.slack_bot_user_id, text, re.I)):
+                not re.search(r'<@%s>' % self.slack_bot_user_id, text, re.I) and
+                not channel_id.startswith("D")):
+                return
+
+            # don't listen to yourself talk
+            if user_id == self.slack_bot_user_id:
                 return
 
             if re.search(r'\bsupport\b', text, re.I):
