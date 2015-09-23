@@ -3,3 +3,5 @@ scoutbot.cfg
 google_api_client_secret.json
 google_api_credentials.json
 client_secret.json
+memory.db
+scoutbot.pid

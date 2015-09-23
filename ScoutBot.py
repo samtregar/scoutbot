@@ -9,6 +9,7 @@ import re
 import json
 import signal
 import sys
+import shelve
 
 # HelpScout API
 import helpscout
@@ -30,6 +31,8 @@ HELPSCOUT_SCAN_INTERVAL = timedelta(minutes=1)
 HELPSCOUT_TIMEOUT = 30
 
 CALENDAR_SCAN_INTERVAL = timedelta(minutes=5)
+
+ANNOYANCE_FREQUENCY = timedelta(minutes=5)
 
 def text2int(textnum, numwords={}):
     if not numwords:
@@ -164,10 +167,19 @@ class ScoutBot:
         self.calendar = []
         self.calendar_refreshed_at = None
 
+        self.last_alert_on_ticket = dict()
+
+        self.memory = shelve.open('memory.db')
+        if "ignore_list" not in self.memory:
+            self.memory['ignore_list'] = set()
+        if "unsub" not in self.memory:
+            self.memory['unsub'] = set()
+
         # is this too rude?  Maybe weird if ScoutBot gets used by
         # other code...
         def signal_handler(signal, frame):
             print("\nExiting SlackBot.  Thank you for playing.\n")
+            self.memory.sync()
             sys.exit(0)
         signal.signal(signal.SIGINT, signal_handler)
 
@@ -236,6 +248,7 @@ class ScoutBot:
         else:
             data['needs_reply_or_close'] = last_client_msg_at > last_support_msg_at
         data['wait_time'] = datetime.utcnow() - (data['last_client_msg_at'] if data['last_client_msg_at'] else datetime.utcnow())
+        data['wait_time_human'] = td_format(data['wait_time'])
         
         return data
 
@@ -253,9 +266,9 @@ class ScoutBot:
         summary = ["Currently active tickets modified within 24 hours:"]
         for ticket in self.helpscout_current_tickets:
             if ticket['new']:
-                summary.append("[<{url}|#{num}>] {subject} => new and unclaimed {wait_time}.".format(**ticket))
+                summary.append("[<{url}|#{num}>] {subject} => new and unclaimed {wait_time_human}.".format(**ticket))
             elif ticket['needs_reply_or_close']:
-                summary.append("[<{url}|#{num}>] {subject} => *needs* response or close {wait_time}.".format(**ticket))
+                summary.append("[<{url}|#{num}>] {subject} => *needs* response or close {wait_time_human}.".format(**ticket))
             else:
                 summary.append("[<{url}|#{num}>] {subject} => handled.".format(**ticket))
 
@@ -279,7 +292,7 @@ class ScoutBot:
                 self.log("*** [%s] %s => new and unclaimed %s" % \
                          (ticket['num'],
                           ticket['subject'],
-                          td_format(ticket['wait_time'])))
+                          ticket['wait_time_human']))
                 if ticket['wait_time'].total_seconds() > self.max_wait_new_ticket:
                     self.alert_support(ticket)
 
@@ -289,8 +302,8 @@ class ScoutBot:
             elif ticket['needs_reply_or_close']:
                 self.log("*** [%s] %s => needs response or close %s" % \
                          (ticket['num'],
-                        ticket['subject'],
-                          td_format(ticket['wait_time'])))
+                          ticket['subject'],
+                          ticket['wait_time_human']))
                 if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
                     self.alert_support(ticket)
                 if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
@@ -303,14 +316,42 @@ class ScoutBot:
 
 
     def alert_support(self, ticket):
+        ignore_list = self.memory['ignore_list']
+        if ticket['num'] in ignore_list:
+            self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
+            return
+
         user =  self.support_now(just_name=True)
         if user:
+            # don't alert too often on any given issue
+            if ticket['num'] in self.last_alert_on_ticket:
+                if ((datetime.utcnow() - self.last_alert_on_ticket[ticket['num']])
+                    < ANNOYANCE_FREQUENCY):
+                    return 
+
             self.log("+++ CALLING FOR HELP ON %s FROM %s +++" % (ticket['num'], user))
+            self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}.\nRespond 'ignore {num}' and I will ignore this ticket from now on.  Respond 'help' to see more options.".format(**ticket))
+            
         else:
-            self.alert_everyone(ticket)
+            self.slackbot_broadcast("Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human} and I couldn't figure out who is on support!\n(Tell me 'ignore {num}' to ignore it.)".format(**ticket))
+
+        self.last_alert_on_ticket[ticket['num']] = datetime.utcnow()
 
     def alert_everyone(self, ticket):
-        self.log("+++ CALLING FOR HELP FROM EVERYONE ON %s!!! +++" % (ticket['num'],))
+        ignore_list = self.memory['ignore_list']
+        if ticket['num'] in ignore_list:
+            self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
+            return
+
+        # don't alert too often on any given issue
+        if ticket['num'] in self.last_alert_on_ticket:
+            if ((datetime.utcnow() - self.last_alert_on_ticket[ticket['num']])
+                < ANNOYANCE_FREQUENCY):
+                return 
+
+        self.slackbot_broadcast("Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}!\n(Tell me 'ignore {num}' to ignore it.)".format(**ticket))
+
+        self.last_alert_on_ticket[ticket['num']] = datetime.utcnow()
 
     def log(self, msg):
         if self.slack_connected:
@@ -475,6 +516,34 @@ class ScoutBot:
         for msg in msgs:
             self.slackbot_handle(msg)
 
+    def slackbot_unsub(self, user):
+        unsub = self.memory['unsub']
+        unsub.add(user)
+        self.memory['unsub'] = unsub
+
+        return "You are now unsubscribed and will no longer receive alerts.  Respond with 'resub' to undo."
+
+    def slackbot_resub(self, user):
+        unsub = self.memory['unsub']
+        unsub.discard(user)
+        self.memory['unsub'] = unsub
+
+        return "You are now re-subscribed and will receive alerts.  Respond with 'unsub' to undo."
+
+    def slackbot_ignore_ticket(self, num):
+        ignore_list = self.memory['ignore_list']
+        ignore_list.add(int(num))
+        self.memory['ignore_list'] = ignore_list
+
+        return "Cool, I'll stop worrying about %s.  To undo respond 'unignore %s'." % (num, num)
+
+    def slackbot_unignore_ticket(self, num):
+        ignore_list = self.memory['ignore_list']
+        ignore_list.discard(int(num))
+        self.memory['ignore_list'] = ignore_list
+
+        return "Ok, I'll start worrying about %s again.  To undo respond 'ignore %s'." % (num, num)
+
     def slackbot_handle(self, msg):
         msg_type   = msg.get("type", "")
         text       = msg.get("text", "")
@@ -494,6 +563,32 @@ class ScoutBot:
 
             # don't listen to yourself talk
             if user_id == self.slack_bot_user_id:
+                return
+
+            if re.search(r'\bhelp\b', text, re.I):
+                self.slackbot_reply(msg, self.slackbot_help())
+                return
+
+            if re.search(r'\bunsub\b', text, re.I):
+                self.slackbot_reply(msg, self.slackbot_unsub(user_id))
+                return
+
+            if re.search(r'\bresub\b', text, re.I):
+                self.slackbot_reply(msg, self.slackbot_resub(user_id))
+                return
+
+            if re.search(r'\bignore\s+(\d+)\b', text, re.I):
+                match = re.search(r'\ignore\s+(\d+)\b', text, re.I)
+                self.slackbot_reply(
+                    msg,
+                    self.slackbot_ignore_ticket(match.groups(1)[0]))
+                return
+
+            if re.search(r'\bunignore\s+(\d+)\b', text, re.I):
+                match = re.search(r'\bunignore\s+(\d+)\b', text, re.I)
+                self.slackbot_reply(
+                    msg,
+                    self.slackbot_unignore_ticket(match.groups(1)[0]))
                 return
 
             if re.search(r'\bsupport\b', text, re.I):
@@ -526,12 +621,45 @@ class ScoutBot:
                 self.slackbot_reply(msg, self.helpscout_status())
                 return
 
+    def slackbot_help(self):
+        return """ScoutBot commands:
+
+        support now
+        support today
+        support tomorrow
+        support X days from now
+
+        helpscout status
+
+        ignore XXX   - ignore ticket XXX
+        unignore XXX - stop ignoring ticket XXX        
+
+        unsub    - permanently unsubscribe you from getting annoyed by me
+        resub    - go back to getting annoyed by me
+        """
+
     def slackbot_reply(self, msg, response):
         self.slack_stack.append((msg['channel'], response))
 
     def slackbot_broadcast(self, msg):
         for channel in self.slack_channels:
             self.slack_stack.append((channel, msg))
+
+    def slackbot_direct_message(self, user, msg):
+        # FIX: send to the real user eventually
+        user = self.slack_user_names['sam']
+
+        unsub = self.memory['unsub']
+        if user in unsub:
+            self.log("Suppressing send of %s to %s: user is unsubscribed." %
+                     (msg, user))
+            return
+
+        dm_channel = json.loads(self.sc.server.api_call('im.open', user=user))
+        if "channel" in dm_channel:
+            self.slack_stack.append((dm_channel['channel']['id'], msg))
+        else:
+            self.log("Failed to open IM channel to %r: %r" % (user, dm_channel))
 
     def slackbot_log(self, msg):
         for channel in self.slack_log_channels:
