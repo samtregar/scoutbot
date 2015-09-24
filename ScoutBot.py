@@ -153,8 +153,18 @@ class ScoutBot:
         self.slack_stack                = []
         self.slack_connected            = False
 
+        self.support_open_at   = dateutil.parser.parse(
+            config.get('scoutbot', 'support_open_at'))
+        self.support_close_at  = dateutil.parser.parse(
+            config.get('scoutbot', 'support_close_at'))
+
+        support_open_days = json.loads(
+            config.get('scoutbot', 'support_open_days'))
+        self.support_open_days = support_open_days
+
         channels = json.loads(config.get('slack', 'channels'))
         self.slack_channels = channels
+
         log_channels = json.loads(config.get('slack', 'log_channels'))
         self.slack_log_channels = log_channels
 
@@ -314,8 +324,21 @@ class ScoutBot:
                          (ticket['num'],
                           ticket['subject']))
 
+    def _support_closed(self):
+        now = datetime.now(tz=TZ)
+        if now.weekday() not in self.support_open_days:
+            return True
 
+        if (now.hour >= self.support_open_at.hour and
+            now.hour < self.support_close_at.hour):
+            return False
+
+        return True
+                
     def alert_support(self, ticket):
+        if self._support_closed():
+            self.log("Ignoring [<{url}|#{num}>] for now, support is closed.".format(**ticket))
+
         ignore_list = self.memory['ignore_list']
         if ticket['num'] in ignore_list:
             self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
@@ -338,6 +361,9 @@ class ScoutBot:
         self.last_alert_on_ticket[ticket['num']] = datetime.utcnow()
 
     def alert_everyone(self, ticket):
+        if self.support_closed():
+            self.log("Ignoring [<{url}|#{num}>] for now, support is closed.".format(**ticket))
+
         ignore_list = self.memory['ignore_list']
         if ticket['num'] in ignore_list:
             self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
@@ -481,6 +507,15 @@ class ScoutBot:
             self.slack_user_names[user.real_name.lower()] = user.id
 
     def slackbot(self):
+        while True:
+            try:
+                self._slackbot()
+            except Exception, e:
+                print "Caught error from slackbot: %r" % e
+                print "Pausing and reconnecting after 10 seconds..."
+            sleep(10)
+
+    def _slackbot(self):
         self.sc = SlackClient(self.slack_api_key)
 
         if self.sc.rtm_connect():
@@ -672,8 +707,13 @@ class ScoutBot:
             if not channel:
                 raise Exception("Could not find channel for msg %r" % (msg))
 
-            self.sc.server.api_call('chat.postMessage', channel=channel.id, text=msg[1], username=self.slack_bot_name, as_user=True)
-            # channel.send_message(msg[1])
+            # need to do this not send_message to get links to format
+            # correctly, oddly enough
+            self.sc.server.api_call('chat.postMessage',
+                                    channel=channel.id,
+                                    text=msg[1],
+                                    username=self.slack_bot_name,
+                                    as_user=True)
 
     def slackbot_autoping(self):
         #hardcode the interval to 3 seconds
