@@ -6,3 +6,4 @@ client_secret.json
 memory.db
 scoutbot.pid
 venv
+.cache

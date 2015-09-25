@@ -687,6 +687,24 @@ class ScoutBot:
                 self.slackbot_reply(msg, self.helpscout_status())
                 return
 
+            if re.search(r'\bhow\s+are\s+you\b', text, re.I) or \
+               re.search(r'\bexcuse\b', text, re.I) or \
+               re.search(r'\bjoke\b', text, re.I) or \
+               re.search(r'\bwhat\'s\s+up\b', text, re.I):
+                self.slackbot_reply(msg, self.joke())
+                return
+
+    def joke(help):
+        try:
+            h = httplib2.Http(".cache")
+            (resp_headers, content) = h.request(
+                "http://api.icndb.com/jokes/random?firstName=Cal&lastName=Bot",
+                "GET")
+            data = json.loads(content)
+            return data['value']['joke']
+        except:
+            return "Huh, I got nothin'."
+
     def slackbot_help(self):
         return """ScoutBot commands:
 
