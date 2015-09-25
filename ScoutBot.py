@@ -233,11 +233,15 @@ class ScoutBot:
         last_client_msg_at = None
         last_owner_email = None
         first = True
+        last_body = None
         for thread in threads:
             created_at = dateutil.parser.parse(thread['createdAt'])\
                          .replace(tzinfo=None)
 
             email = thread['createdBy']['email']
+            body = thread['body'].lower()
+            last_body = body
+            
             if email.endswith(self.support_domain):
                 if (last_support_msg_at is None or \
                     last_support_msg_at < created_at):
@@ -245,7 +249,6 @@ class ScoutBot:
                     last_owner_email = last_owner_email
             else:
                 if last_client_msg_at is not None:
-                    body = thread['body'].lower()
                     if (('thanks' in body or 'thank you' in body) and
                         len(body) < 60):
                         self.log("Ignoring short thanks reply from client: %s" % (body))
@@ -258,6 +261,8 @@ class ScoutBot:
         data['new'] = last_support_msg_at is None
         data['last_support_msg_at'] = last_support_msg_at
         data['last_client_msg_at'] = last_client_msg_at
+        data['last_body'] = body
+
         if data['new']:
             data['needs_reply_or_close'] = True
         elif data['last_client_msg_at'] is None:
@@ -334,9 +339,21 @@ class ScoutBot:
                     self.alert_everyone(ticket)
 
             else:
-                self.log("+ [%s] %s => handled" % \
-                         (ticket['num'],
-                          ticket['subject']))
+                # these are handled, but check to see if we said we
+                # were looking into it, in which case we get
+                # max_wait_response_or_close to look before we have to
+                # respond again.
+                if re.search(r'(look|check|digg?|investigat)(e|ing)?\s+((at|into)\s+)?(that|this|it)',
+                             ticket['last_body']):
+                    self.log("*** Found a looking/investigating reply for [%s] %s, checking wait time!" % (ticket['num'], ticket['subject']))
+                    if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
+                        self.alert_support(ticket)
+                    if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
+                        self.alert_everyone(ticket)
+                else:                    
+                    self.log("+ [%s] %s => handled" % \
+                             (ticket['num'],
+                              ticket['subject']))
 
     def _support_closed(self):
         now = datetime.now(tz=TZ)
