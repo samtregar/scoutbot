@@ -239,7 +239,7 @@ class ScoutBot:
                          .replace(tzinfo=None)
 
             email = thread['createdBy']['email']
-            body = thread['body'].lower()
+            body = thread['body'].lower() if thread['body'] else ''
             last_body = body
             
             if email.endswith(self.support_domain):
@@ -712,6 +712,9 @@ class ScoutBot:
             self.slack_stack.append((channel, msg))
 
     def slackbot_direct_message(self, user, msg):
+        # strip out slack formatting
+        user = re.sub(r'[\<\>@]+', '', user)
+
         unsub = self.memory['unsub']
         if user in unsub:
             self.log("Suppressing send of %s to %s: user is unsubscribed." %
