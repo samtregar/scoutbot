@@ -689,9 +689,6 @@ class ScoutBot:
             self.slack_stack.append((channel, msg))
 
     def slackbot_direct_message(self, user, msg):
-        # FIX: send to the real user eventually
-        user = self.slack_user_names['sam']
-
         unsub = self.memory['unsub']
         if user in unsub:
             self.log("Suppressing send of %s to %s: user is unsubscribed." %
