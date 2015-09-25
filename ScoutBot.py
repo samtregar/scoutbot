@@ -281,14 +281,20 @@ class ScoutBot:
         if not self.helpscout_current_tickets:
             return "Huh, not sure.  I might be having trouble reaching helpscout. Please find @sam and ask him to fix me."
 
+        ignore_list = self.memory['ignore_list']
+
         summary = ["Currently active tickets modified within 24 hours:"]
         for ticket in self.helpscout_current_tickets:
+            if ticket['num'] in ignore_list:
+                summary.append("[<{url}|#{num}>] {subject} => *ignored*.".format(**ticket))
+                continue
+
             if ticket['new']:
-                summary.append("[<{url}|#{num}>] {subject} => new and unclaimed {wait_time_human}.".format(**ticket))
+                summary.append("[<{url}|#{num}>] {subject} => *new and unclaimed* {wait_time_human}.".format(**ticket))
             elif ticket['needs_reply_or_close']:
-                summary.append("[<{url}|#{num}>] {subject} => *needs* response or close {wait_time_human}.".format(**ticket))
+                summary.append("[<{url}|#{num}>] {subject} => *needs response or close* {wait_time_human}.".format(**ticket))
             else:
-                summary.append("[<{url}|#{num}>] {subject} => handled.".format(**ticket))
+                summary.append("[<{url}|#{num}>] {subject} => *handled*.".format(**ticket))
 
         if len(summary) == 1:
             summary.append("None!")
