@@ -232,6 +232,7 @@ class ScoutBot:
         last_support_msg_at = None
         last_client_msg_at = None
         last_owner_email = None
+        first = True
         for thread in threads:
             created_at = dateutil.parser.parse(thread['createdAt'])\
                          .replace(tzinfo=None)
@@ -243,6 +244,13 @@ class ScoutBot:
                     last_support_msg_at = created_at
                     last_owner_email = last_owner_email
             else:
+                if last_client_msg_at is not None:
+                    body = thread['body'].lower()
+                    if (('thanks' in body or 'thank you' in body) and
+                        len(body) < 60):
+                        self.log("Ignoring short thanks reply from client: %s" % (body))
+                        continue
+
                 if (last_client_msg_at is None or \
                     last_client_msg_at < created_at):
                     last_client_msg_at = created_at
@@ -316,7 +324,7 @@ class ScoutBot:
                           ticket['wait_time_human']))
                 if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
                     self.alert_support(ticket)
-                if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
+                if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 4):
                     self.alert_everyone(ticket)
 
             else:
@@ -361,7 +369,7 @@ class ScoutBot:
         self.last_alert_on_ticket[ticket['num']] = datetime.utcnow()
 
     def alert_everyone(self, ticket):
-        if self.support_closed():
+        if self._support_closed():
             self.log("Ignoring [<{url}|#{num}>] for now, support is closed.".format(**ticket))
 
         ignore_list = self.memory['ignore_list']
