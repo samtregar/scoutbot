@@ -694,7 +694,7 @@ class ScoutBot:
                 self.slackbot_reply(msg, self.joke())
                 return
 
-    def joke(help):
+    def joke(self):
         try:
             h = httplib2.Http(".cache")
             (resp_headers, content) = h.request(
