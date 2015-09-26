@@ -701,7 +701,12 @@ class ScoutBot:
                 "http://api.icndb.com/jokes/random?firstName=Cal&lastName=Bot",
                 "GET")
             data = json.loads(content)
-            return data['value']['joke']
+            joke = data['value']['joke']
+            joke = re.sub(r'&amp;', '&', joke)
+            joke = re.sub(r'&lt;', '<', joke)
+            joke = re.sub(r'&gt;', '>', joke)
+            joke = re.sub(r'&quot;', '"', joke)
+            return joke
         except:
             return "Huh, I got nothin'."
 
