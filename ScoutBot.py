@@ -669,12 +669,12 @@ class ScoutBot:
                         self.slackbot_reply(msg, self.support_day(offset=days))
                         return
 
-            if re.search(r'\bon\s+support\b', text, re.I) and \
+            if re.search(r'\b(on\s+)?support\b', text, re.I) and \
                re.search(r'\bnow\b', text, re.I):
                 self.slackbot_reply(msg, self.support_now())
                 return
 
-            if re.search(r'\bon\s+support\b', text, re.I) and \
+            if re.search(r'\b(on\s+)?support\b', text, re.I) and \
                re.search(r'\btoday\b', text, re.I):
                 self.slackbot_reply(msg, self.support_day())
                 return
