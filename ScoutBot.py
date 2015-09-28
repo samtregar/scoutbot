@@ -369,6 +369,7 @@ class ScoutBot:
     def alert_support(self, ticket):
         if self._support_closed():
             self.log("Ignoring [<{url}|#{num}>] for now, support is closed.".format(**ticket))
+            return
 
         ignore_list = self.memory['ignore_list']
         if ticket['num'] in ignore_list:
@@ -394,6 +395,7 @@ class ScoutBot:
     def alert_everyone(self, ticket):
         if self._support_closed():
             self.log("Ignoring [<{url}|#{num}>] for now, support is closed.".format(**ticket))
+            return
 
         ignore_list = self.memory['ignore_list']
         if ticket['num'] in ignore_list:
