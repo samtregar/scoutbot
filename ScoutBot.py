@@ -339,21 +339,9 @@ class ScoutBot:
                     self.alert_everyone(ticket)
 
             else:
-                # these are handled, but check to see if we said we
-                # were looking into it, in which case we get
-                # max_wait_response_or_close to look before we have to
-                # respond again.
-                if re.search(r'(look|check|digg?|investigat)(e|ing)?\s+((at|into)\s+)?(that|this|it)',
-                             ticket['last_body']):
-                    self.log("*** Found a looking/investigating reply for [%s] %s, checking wait time!" % (ticket['num'], ticket['subject']))
-                    if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
-                        self.alert_support(ticket)
-                    if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
-                        self.alert_everyone(ticket)
-                else:                    
-                    self.log("+ [%s] %s => handled" % \
-                             (ticket['num'],
-                              ticket['subject']))
+                self.log("+ [%s] %s => handled" % \
+                         (ticket['num'],
+                          ticket['subject']))
 
     def _support_closed(self):
         now = datetime.now(tz=TZ)
