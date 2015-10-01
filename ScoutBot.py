@@ -32,7 +32,7 @@ HELPSCOUT_TIMEOUT = 30
 
 CALENDAR_SCAN_INTERVAL = timedelta(minutes=5)
 
-ANNOYANCE_FREQUENCY = timedelta(minutes=5)
+ANNOYANCE_FREQUENCY = timedelta(minutes=10)
 
 def text2int(textnum, numwords={}):
     if not numwords:
