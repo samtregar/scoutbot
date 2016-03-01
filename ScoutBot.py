@@ -147,6 +147,8 @@ class ScoutBot:
                                                      'support_calendar_id')
         self.last_calender_scan        = datetime.utcnow() - \
                                          CALENDAR_SCAN_INTERVAL
+        self.bugzilla_url              = config.get('bugzilla', 'url')
+
         self.slack_api_key              = config.get('slack', 'api_key')
         self.slack_bot_name             = config.get('slack', 'bot_name')
         self.slack_last_ping            = 0
@@ -178,6 +180,9 @@ class ScoutBot:
         self.calendar_refreshed_at = None
 
         self.last_alert_on_ticket = dict()
+        self.last_alert_everyone_on_ticket = dict()
+        self.last_hs_link = dict()
+        self.last_bugzilla_link = dict()
 
         self.memory = shelve.open('memory.db')
         if "ignore_list" not in self.memory:
@@ -235,11 +240,11 @@ class ScoutBot:
         first = True
         last_body = None
         for thread in threads:
-            created_at = dateutil.parser.parse(thread['createdAt'])\
+            created_at = dateutil.parser.parse(thread.createdat)\
                          .replace(tzinfo=None)
 
-            email = thread['createdBy']['email']
-            body = thread['body'].lower() if thread['body'] else ''
+            email = thread.createdby['email']
+            body = thread.body.lower() if thread.body else ''
             last_body = body
             
             if email.endswith(self.support_domain):
@@ -335,7 +340,7 @@ class ScoutBot:
                           ticket['wait_time_human']))
                 if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
                     self.alert_support(ticket)
-                if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 4):
+                if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
                     self.alert_everyone(ticket)
 
             else:
@@ -391,14 +396,13 @@ class ScoutBot:
             return
 
         # don't alert too often on any given issue
-        if ticket['num'] in self.last_alert_on_ticket:
-            if ((datetime.utcnow() - self.last_alert_on_ticket[ticket['num']])
-                < ANNOYANCE_FREQUENCY):
+        if ticket['num'] in self.last_alert_everyone_on_ticket:
+            if ((datetime.utcnow() - self.last_alert_everyone_on_ticket[ticket['num']]) < ANNOYANCE_FREQUENCY):
                 return 
 
-        self.slackbot_broadcast("Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}!\n(Tell me 'ignore {num}' to ignore it.)".format(**ticket))
+        self.slackbot_broadcast("<!channel> Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}!\n(Tell me 'ignore {num}' to ignore it.)".format(**ticket))
 
-        self.last_alert_on_ticket[ticket['num']] = datetime.utcnow()
+        self.last_alert_everyone_on_ticket[ticket['num']] = datetime.utcnow()
 
     def log(self, msg):
         if self.slack_connected:
@@ -533,6 +537,8 @@ class ScoutBot:
                 self._slackbot()
             except Exception, e:
                 print "Caught error from slackbot: %r" % e
+                import sys, traceback
+                traceback.print_exc()
                 print "Pausing and reconnecting after 10 seconds..."
             sleep(10)
 
@@ -543,8 +549,10 @@ class ScoutBot:
             self.slack_connected = True
 
             # need this so I can scan for messages @me
-            self.slack_bot_user_id = self.sc.server.users.find(
-                self.slack_bot_name).id
+            slack_bot_user = self.sc.server.users.find(self.slack_bot_name)
+            if not slack_bot_user:
+                raise Exception("Failed to load user for name %r" % (self.slack_bot_name,))
+            self.slack_bot_user_id = slack_bot_user.id
 
             self._index_slack_names()
 
@@ -609,16 +617,28 @@ class ScoutBot:
         # print repr(msg) + "\n"
     
         if msg_type == "message":
-            # if it mentions me or it's in direct-message channel (is
-            # there a better way to do that than look at channel ID
-            # directly?)
+            # don't listen to yourself talk
+            if user_id == self.slack_bot_user_id:
+                return
+
+            # if someone mentions a ticket number, post a helpful link
+            if re.search(r'\b(?:hs|helpscout)\s?[#]?(\d+)\b', text, re.I):
+                match = re.search(r'\b(?:hs|helpscout)\s?[#]?(\d+)\b',
+                                  text, re.I)
+                ticket_num = match.groups(1)[0];
+                self.slackbot_link_hs(msg, ticket_num)
+
+            # if someone mentions a ticket number, post a helpful link
+            if re.search(r'\b(?:bug|bugzilla)\s?[#]?(\d+)\b', text, re.I):
+                match = re.search(r'\b(?:bug|bugzilla)\s?[#]?(\d+)\b',
+                                  text, re.I)
+                bug_num = match.groups(1)[0];
+                self.slackbot_bugzilla_link(msg, bug_num)
+
+            # only look for the below commands if targeted directly
             if (not re.search(r'\b%s\b' % self.slack_bot_name, text, re.I) and
                 not re.search(r'<@%s>' % self.slack_bot_user_id, text, re.I) and
                 not channel_id.startswith("D")):
-                return
-
-            # don't listen to yourself talk
-            if user_id == self.slack_bot_user_id:
                 return
 
             if re.search(r'\bhelp\b', text, re.I):
@@ -716,6 +736,47 @@ class ScoutBot:
         unsub    - permanently unsubscribe you from getting annoyed by me
         resub    - go back to getting annoyed by me
         """
+
+    def slackbot_link_hs(self, msg, num):
+        if num in self.last_hs_link:
+            if ((datetime.utcnow() - self.last_hs_link[num])
+                < ANNOYANCE_FREQUENCY):
+                return
+
+        client = self.client
+
+        # this API wrapper has the wackiest paging system...  Gotta
+        # clear it here or subsequent calls will silently find
+        # nothing!
+        client.clearstate()
+
+        url = None
+        subject = None
+        for result in helpscout_pager(client.search, query="number:%s" % num):
+            if int(result.number) == int(num):
+                url = "https://secure.helpscout.net/conversation/%s" % result.id
+                subject = result.subject
+                break
+
+        if url:
+            self.slackbot_reply(msg,
+                                "HelpScout [<{url}|#{num}>] - {subject}".format(
+                                    num=num,
+                                    url=url,
+                                    subject=subject))
+            self.last_hs_link[num] = datetime.utcnow()
+
+    def slackbot_bugzilla_link(self, msg, num):
+        if num in self.last_bugzilla_link:
+            if ((datetime.utcnow() - self.last_bugzilla_link[num])
+                < ANNOYANCE_FREQUENCY):
+                return
+        url = self.bugzilla_url + 'show_bug.cgi?id=' + num
+        self.slackbot_reply(msg,
+                            "Bugzilla [<{url}|#{num}>]".format(
+                                num=num,
+                                url=url))
+        self.last_bugzilla_link[num] = datetime.utcnow()
 
     def slackbot_reply(self, msg, response):
         self.slack_stack.append((msg['channel'], response))
