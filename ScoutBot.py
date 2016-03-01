@@ -256,7 +256,8 @@ class ScoutBot:
                 if last_client_msg_at is not None:
                     if (('thanks' in body or 'thank you' in body) and
                         len(body) < 60):
-                        self.log("Ignoring short thanks reply from client: %s" % (body))
+                        self.log("Ignoring short thanks reply from client: %s"
+                                 % (body))
                         continue
 
                 if (last_client_msg_at is None or \
@@ -330,7 +331,9 @@ class ScoutBot:
                 if ticket['wait_time'].total_seconds() > self.max_wait_new_ticket:
                     self.alert_support(ticket)
 
-                if ticket['wait_time'].total_seconds() > (self.max_wait_new_ticket * 2):
+                if ticket['wait_time'].total_seconds() > (self.max_wait_new_ticket * 3):
+                    self.alert_everyone(ticket, yell=True)
+                elif ticket['wait_time'].total_seconds() > (self.max_wait_new_ticket * 2):
                     self.alert_everyone(ticket)
 
             elif ticket['needs_reply_or_close']:
@@ -340,7 +343,9 @@ class ScoutBot:
                           ticket['wait_time_human']))
                 if ticket['wait_time'].total_seconds() > self.max_wait_response_or_close:
                     self.alert_support(ticket)
-                if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
+                if ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 3):
+                    self.alert_everyone(ticket, yell=True)
+                elif ticket['wait_time'].total_seconds() > (self.max_wait_response_or_close * 2):
                     self.alert_everyone(ticket)
 
             else:
@@ -385,7 +390,7 @@ class ScoutBot:
 
         self.last_alert_on_ticket[ticket['num']] = datetime.utcnow()
 
-    def alert_everyone(self, ticket):
+    def alert_everyone(self, ticket, yell=False):
         if self._support_closed():
             self.log("Ignoring [<{url}|#{num}>] for now, support is closed.".format(**ticket))
             return
@@ -400,7 +405,9 @@ class ScoutBot:
             if ((datetime.utcnow() - self.last_alert_everyone_on_ticket[ticket['num']]) < ANNOYANCE_FREQUENCY):
                 return 
 
-        self.slackbot_broadcast("<!channel> Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}!\n(Tell me 'ignore {num}' to ignore it.)".format(**ticket))
+        # has it been a really long time?  Add in <!channel> for extra BOOM
+        extra = "<!channel>" if yell else ""
+        self.slackbot_broadcast("{extra}Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}!\n(Tell me 'ignore {num}' to ignore it.)".format(extra=extra, **ticket))
 
         self.last_alert_everyone_on_ticket[ticket['num']] = datetime.utcnow()
 
