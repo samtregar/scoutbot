@@ -187,6 +187,8 @@ class ScoutBot:
         self.memory = shelve.open('memory.db')
         if "ignore_list" not in self.memory:
             self.memory['ignore_list'] = set()
+        if "snooze" not in self.memory:
+            self.memory['snooze'] = dict()
         if "unsub" not in self.memory:
             self.memory['unsub'] = set()
 
@@ -293,12 +295,18 @@ class ScoutBot:
             return "Huh, not sure.  I might be having trouble reaching helpscout. Please find @sam and ask him to fix me."
 
         ignore_list = self.memory['ignore_list']
+        snooze      = self.memory['snooze']
 
         summary = ["Currently active tickets modified within 24 hours:"]
         for ticket in self.helpscout_current_tickets:
             if ticket['num'] in ignore_list:
                 summary.append("[<{url}|#{num}>] {subject} => *ignored*.".format(**ticket))
                 continue
+
+            if int(ticket['num']) in snooze and datetime.utcnow() < snooze[int(ticket['num'])]:
+                summary.append("[<{url}|#{num}>] {subject} => *snoozed* until {time}.".format(time=snooze[int(ticket['num'])], **ticket))
+                continue
+
 
             if ticket['new']:
                 summary.append("[<{url}|#{num}>] {subject} => *new and unclaimed* {wait_time_human}.".format(**ticket))
@@ -374,6 +382,11 @@ class ScoutBot:
             self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
             return
 
+        snooze = self.memory['snooze']
+        if int(ticket['num']) in snooze and datetime.utcnow() < snooze[int(ticket['num'])]:
+            self.log("Ignoring [<{url}|#{num}>], it's snoozed until {time}.".format(time=snooze[int(ticket['num'])], **ticket))
+            return
+
         user =  self.support_now(just_name=True)
         if user:
             # don't alert too often on any given issue
@@ -383,10 +396,10 @@ class ScoutBot:
                     return 
 
             self.log("+++ CALLING FOR HELP ON %s FROM %s +++" % (ticket['num'], user))
-            self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}.\nRespond 'ignore {num}' and I will ignore this ticket from now on.  Respond 'help' to see more options.".format(**ticket))
+            self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}.\nRespond 'ignore {num}' and I will ignore this ticket from now on, or 'snooze {num} [n]' to snooze for n minutes, 10 by default.  Respond 'help' to see more options.".format(**ticket))
             
         else:
-            self.slackbot_broadcast("Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human} and I couldn't figure out who is on support!\n(Tell me 'ignore {num}' to ignore it.)".format(**ticket))
+            self.slackbot_broadcast("Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human} and I couldn't figure out who is on support!\n(Tell me 'ignore {num}' to ignore it or 'snooze {num} [n]' to snooze for n minutes, 10 by default.)".format(**ticket))
 
         self.last_alert_on_ticket[ticket['num']] = datetime.utcnow()
 
@@ -400,14 +413,19 @@ class ScoutBot:
             self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
             return
 
+        snooze = self.memory['snooze']
+        if int(ticket['num']) in snooze and datetime.utcnow() < snooze[int(ticket['num'])]:
+            self.log("Ignoring [<{url}|#{num}>], it's snoozed until {time}.".format(time=snooze[int(ticket['num'])], **ticket))
+            return
+
         # don't alert too often on any given issue
         if ticket['num'] in self.last_alert_everyone_on_ticket:
             if ((datetime.utcnow() - self.last_alert_everyone_on_ticket[ticket['num']]) < ANNOYANCE_FREQUENCY):
                 return 
 
         # has it been a really long time?  Add in <!channel> for extra BOOM
-        extra = "<!channel>" if yell else ""
-        self.slackbot_broadcast("{extra}Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}!\n(Tell me 'ignore {num}' to ignore it.)".format(extra=extra, **ticket))
+        extra = "<!channel> " if yell else ""
+        self.slackbot_broadcast("{extra}Ticket [<{url}|#{num}>] {subject} has been awaiting a response for {wait_time_human}!\n(Tell me 'ignore {num}' to ignore it or 'snooze {num} [n]' to snooze for n minutes, 10 by default.)".format(extra=extra, **ticket))
 
         self.last_alert_everyone_on_ticket[ticket['num']] = datetime.utcnow()
 
@@ -615,6 +633,24 @@ class ScoutBot:
 
         return "Ok, I'll start worrying about %s again.  To undo respond 'ignore %s'." % (num, num)
 
+    def slackbot_snooze_ticket(self, num, time):
+        if time is None or time == "":
+            time = 10
+        else:
+            time = int(time)
+        snooze = self.memory['snooze']
+        snooze[int(num)] = datetime.utcnow() + timedelta(minutes=time)
+        self.memory['snooze'] = snooze
+
+        return "Cool, snoozing %s for %d minutes.  To undo respond 'unsnooze %s'." % (num, time, num)
+
+    def slackbot_unsnooze_ticket(self, num):
+        snooze = self.memory['snooze']
+        del snooze[int(num)]
+        self.memory['snooze'] = snooze
+
+        return "Ok, I'll start worrying about %s again.  To undo respond 'snooze %s'." % (num, num)
+
     def slackbot_handle(self, msg):
         msg_type   = msg.get("type", "")
         text       = msg.get("text", "")
@@ -672,6 +708,21 @@ class ScoutBot:
                 self.slackbot_reply(
                     msg,
                     self.slackbot_unignore_ticket(match.groups(1)[0]))
+                return
+
+            if re.search(r'\bsnooze\s+(\d+)\b(?:\s+(\d+))?', text, re.I):
+                match = re.search(r'\bsnooze\s+(\d+)\b(?:\s+(\d+))?', text, re.I)
+                self.slackbot_reply(
+                    msg,
+                    self.slackbot_snooze_ticket(match.group(1),
+                                                match.group(2)))
+                return
+
+            if re.search(r'\bunsnooze\s+(\d+)\b', text, re.I):
+                match = re.search(r'\bunsnooze\s+(\d+)\b', text, re.I)
+                self.slackbot_reply(
+                    msg,
+                    self.slackbot_unsnooze_ticket(match.groups(1)[0]))
                 return
 
             if re.search(r'\bsupport\b', text, re.I):
@@ -739,6 +790,9 @@ class ScoutBot:
 
         ignore XXX   - ignore ticket XXX
         unignore XXX - stop ignoring ticket XXX        
+
+        snooze XXX [YYY] - ignore ticket XXX for YYY minutes or 10 by default
+        unsnooze XXX     - stop snoozing ticket XXX        
 
         unsub    - permanently unsubscribe you from getting annoyed by me
         resub    - go back to getting annoyed by me
