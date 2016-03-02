@@ -126,6 +126,13 @@ def timeout(func, args=(), kwargs={}, timeout_duration=1, default=None):
         signal.alarm(0)
 
     return result
+
+def _body_len_minus_sig(body):
+    if not re.search(r'---?\r?\n', body, re.S):
+        return len(body)
+
+    match = re.search(r'^(.*)---?\r?\n', body, re.S)
+    return len(match.group(1))
     
 class ScoutBot:
     def __init__(self, config_file='scoutbot.cfg'):
@@ -257,7 +264,7 @@ class ScoutBot:
             else:
                 if last_client_msg_at is not None:
                     if (('thanks' in body or 'thank you' in body) and
-                        len(body) < 60):
+                        _body_len_minus_sig(body) < 60):
                         self.log("Ignoring short thanks reply from client: %s"
                                  % (body))
                         continue
@@ -366,10 +373,14 @@ class ScoutBot:
         if now.weekday() not in self.support_open_days:
             return True
 
+        on_now = self.support_now(just_name=True).lower()
+        if "closed" in on_now or "holiday" in on_now:
+            return True
+
         if (now.hour >= self.support_open_at.hour and
             now.hour < self.support_close_at.hour):
             return False
-
+        
         return True
                 
     def alert_support(self, ticket):
