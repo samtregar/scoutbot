@@ -216,11 +216,12 @@ class ScoutBot:
         client.clearstate()
         
         results = []
-        for mailbox in helpscout_pager(client.mailboxes):
+        for mailbox in list(helpscout_pager(client.mailboxes)):
             # look back up to 6 hours by default
             start_date = datetime.utcnow() - timedelta(hours = hours)
             start_date = start_date.replace(microsecond=0).isoformat() + 'Z'
 
+            client.clearstate()
             for conv in helpscout_pager(client.conversations_for_mailbox,
                                         mailbox.id,
                                         status=status,
