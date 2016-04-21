@@ -293,7 +293,9 @@ class ScoutBot:
         # if the last client contact came while support was closed and
         # support is now open, rebase last_client_msg_at at support
         # open time
-        last_msg_at = data['last_client_msg_at'].replace(
+        last_msg_at = (data['last_client_msg_at'] if
+                       data['last_client_msg_at'] else
+                       datetime.utcnow()).replace(
             tzinfo=timezone("UTC")).astimezone(tz=TZ)
         support_start_at = datetime.now(tz=TZ).replace(
             hour=self.support_open_at.hour,
