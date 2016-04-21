@@ -88,6 +88,9 @@ def td_format(td_object):
         ('hour',        60*60),
         ('minute',      60)
                 ]
+
+    if not seconds:
+        return "0 seconds"
     
     strings=[]
     for period_name,period_seconds in periods:
@@ -286,8 +289,30 @@ class ScoutBot:
             data['needs_reply_or_close'] = False
         else:
             data['needs_reply_or_close'] = last_client_msg_at > last_support_msg_at
-        data['wait_time'] = datetime.utcnow() - (data['last_client_msg_at'] if data['last_client_msg_at'] else datetime.utcnow())
-        data['wait_time_human'] = td_format(data['wait_time'])
+
+        # if the last client contact came while support was closed and
+        # support is now open, rebase last_client_msg_at at support
+        # open time
+        last_msg_at = data['last_client_msg_at'].replace(
+            tzinfo=timezone("UTC")).astimezone(tz=TZ)
+        support_start_at = datetime.now(tz=TZ).replace(
+            hour=self.support_open_at.hour,
+            minute=0,
+            second=0)
+
+        if (last_msg_at < support_start_at):
+            # ticket pre-dated the start of support, start the clock again
+            data['wait_time'] = datetime.now(tz=TZ) - support_start_at
+            if data['wait_time'].total_seconds() < 0:
+                data['wait_time'] = datetime.utcnow() - datetime.utcnow()
+
+            data['wait_time_human'] = td_format(data['wait_time'])
+
+            self.log("Found ticket %s from before support started at (%d:00) - reseting wait time to %s" % (data['num'], self.support_open_at.hour, data['wait_time_human']))
+
+        else:
+            data['wait_time'] = datetime.utcnow() - (data['last_client_msg_at'] if data['last_client_msg_at'] else datetime.utcnow())
+            data['wait_time_human'] = td_format(data['wait_time'])
         
         return data
 
