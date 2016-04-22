@@ -573,16 +573,22 @@ class ScoutBot:
 
         self.calendar = []
         for event in events:
-            start = dateutil.parser.parse(
-                event['start'].get('dateTime',
-                                   event['start'].get('date')))
-            start = start.astimezone(tz=TZ)
-            end = dateutil.parser.parse(
-                event['end'].get('dateTime',
-                                 event['start'].get('date')))
-            end = end.astimezone(tz=TZ)
+            try:
+                start = dateutil.parser.parse(
+                    event['start'].get('dateTime',
+                                       event['start'].get('date')))
+                start = start.astimezone(tz=TZ)
+                
+                end = dateutil.parser.parse(
+                    event['end'].get('dateTime',
+                                     event['start'].get('date')))
+                end = end.astimezone(tz=TZ)
 
-            self.calendar.append((start, end, self.slack_name_for_full_name(event['summary'])))
+                self.calendar.append((start, end, self.slack_name_for_full_name(event['summary'])))
+            except Exception, e:
+                # sometimes there's weird stuff on the calendar that
+                # can't be parsed, ignore it
+                pass
 
         self.calendar_refreshed_at = datetime.utcnow()
         return self.calendar
