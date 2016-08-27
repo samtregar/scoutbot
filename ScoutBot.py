@@ -193,8 +193,11 @@ class ScoutBot:
         self.last_alert_everyone_on_ticket = dict()
         self.last_hs_link = dict()
         self.last_bugzilla_link = dict()
+        self.initial_alert_sent = set()
 
         self.memory = shelve.open('memory.db')
+        if "quiet_users" not in self.memory:
+            self.memory['quiet_users'] = set()
         if "ignore_list" not in self.memory:
             self.memory['ignore_list'] = set()
         if "snooze" not in self.memory:
@@ -426,7 +429,7 @@ class ScoutBot:
         if self._support_closed():
             self.log("Ignoring [<{url}|#{num}>] for now, support is closed.".format(**ticket))
             return
-
+        
         ignore_list = self.memory['ignore_list']
         if ticket['num'] in ignore_list:
             self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
@@ -439,6 +442,11 @@ class ScoutBot:
 
         user =  self.support_now(just_name=True)
         if user:
+            if ticket['num'] not in self.initial_alert_sent and user not in self.memory.quiet_users:
+                self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} was opened.\nRespond 'quieter' to stop these messages (then 'louder' if you want them resumed).  Respond 'help' to see more options.".format(**ticket))
+                self.initial_alert_sent.add(ticket['num'])
+                return
+
             # don't alert too often on any given issue
             if ticket['num'] in self.last_alert_on_ticket:
                 if ((datetime.utcnow() - self.last_alert_on_ticket[ticket['num']])
@@ -811,12 +819,38 @@ class ScoutBot:
                 self.slackbot_reply(msg, self.helpscout_status())
                 return
 
+            if re.search(r'\blouder\b', text, re.I):
+                self.slackbot_reply(msg, self.set_user_loudness(user_id, "loud"))
+                return
+
+            if re.search(r'\bquieter\b', text, re.I):
+                self.slackbot_reply(msg, self.set_user_loudness(user_id, "quiet"))
+                return
+
             if re.search(r'\bhow\s+are\s+you\b', text, re.I) or \
                re.search(r'\bexcuse\b', text, re.I) or \
                re.search(r'\bjoke\b', text, re.I) or \
                re.search(r'\bwhat\'s\s+up\b', text, re.I):
                 self.slackbot_reply(msg, self.joke())
                 return
+    
+    def set_user_loudness(self, user_id, setting):
+        if 'quiet_users' not in self.memory:
+            self.memory.quiet_users = set()
+        if setting == "loud":
+            if user_id not in self.memory.quiet_users:
+                self.memory.quiet_users.add(user_id)
+                return "When you're on, you'll be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
+            else:
+                return "You're already set up to be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
+        elif setting == "quiet":
+            if user_id in self.memory.quiet_users:
+                self.memory.quiet_users.remove(user_id)
+                return "You'll no longer be pinged as tickets come in. Message me 'louder' to resume getting those pings."
+            else:
+                return "You're already set up not to be pinged as tickets come in. Message me 'louder' to resume getting those pings."
+        else:
+            raise Exception("set_user_loudness needs 'loud' or 'quiet'")
 
     def joke(self):
         try:
@@ -852,6 +886,9 @@ class ScoutBot:
 
         unsub    - permanently unsubscribe you from getting annoyed by me
         resub    - go back to getting annoyed by me
+        
+        louder  - get pinged as tickets arrive on your shift, without delay
+        quieter - stop getting pinged as tickets arrive
         """
 
     def slackbot_link_hs(self, msg, num):
