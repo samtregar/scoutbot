@@ -201,6 +201,8 @@ class ScoutBot:
             self.memory['snooze'] = dict()
         if "unsub" not in self.memory:
             self.memory['unsub'] = set()
+        if "support_user" not in self.memory:
+            self.memory['support_user'] = ""
 
         # is this too rude?  Maybe weird if ScoutBot gets used by
         # other code...
@@ -321,9 +323,18 @@ class ScoutBot:
     def watch(self, once=False):
         while True:
             self.scan_conversations()
+            self.shift_change()
             if once:
                 return
             sleep(10)
+
+    def shift_change(self):
+        current = self.support_now(just_name=True)
+        previous = self.memory['support_user']
+        if current and current != previous:
+            self.memory['support_user'] = current
+            self.slackbot_direct_message(current,
+                                         "Ahoy! You're now on support.")
 
     def helpscout_status(self):
         if not self.helpscout_current_tickets:
