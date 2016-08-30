@@ -315,6 +315,7 @@ class ScoutBot:
 
             data['wait_time_human'] = td_format(data['wait_time'])
 
+            self.log("last msg at: %s, support started at: %s" % (last_msg_at, support_start_at))
             self.log("Found ticket %s from before support started at (%d:00) - reseting wait time to %s" % (data['num'], self.support_open_at.hour, data['wait_time_human']))
 
         else:
@@ -385,6 +386,13 @@ class ScoutBot:
                          (ticket['num'],
                           ticket['subject'],
                           ticket['wait_time_human']))
+
+                user =  self.support_now(just_name=True)
+                if user and not self._support_closed() and ticket['num'] not in self.initial_alert_sent and user not in self.memory['quiet_users']:
+                        self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} was opened.\nRespond 'quieter' to stop these messages (then 'louder' if you want them resumed).  Respond 'help' to see more options.".format(**ticket))
+                        self.initial_alert_sent.add(ticket['num'])
+                        return
+
                 if ticket['wait_time'].total_seconds() > self.max_wait_new_ticket:
                     self.alert_support(ticket)
 
@@ -442,11 +450,6 @@ class ScoutBot:
 
         user =  self.support_now(just_name=True)
         if user:
-            if ticket['num'] not in self.initial_alert_sent and user not in self.memory.quiet_users:
-                self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} was opened.\nRespond 'quieter' to stop these messages (then 'louder' if you want them resumed).  Respond 'help' to see more options.".format(**ticket))
-                self.initial_alert_sent.add(ticket['num'])
-                return
-
             # don't alert too often on any given issue
             if ticket['num'] in self.last_alert_on_ticket:
                 if ((datetime.utcnow() - self.last_alert_on_ticket[ticket['num']])
@@ -836,19 +839,19 @@ class ScoutBot:
     
     def set_user_loudness(self, user_id, setting):
         if 'quiet_users' not in self.memory:
-            self.memory.quiet_users = set()
-        if setting == "loud":
-            if user_id not in self.memory.quiet_users:
-                self.memory.quiet_users.add(user_id)
-                return "When you're on, you'll be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
-            else:
-                return "You're already set up to be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
-        elif setting == "quiet":
-            if user_id in self.memory.quiet_users:
-                self.memory.quiet_users.remove(user_id)
+            self.memory['quiet_users'] = set()
+        if setting == "quiet":
+            if user_id not in self.memory['quiet_users']:
+                self.memory['quiet_users'].add(user_id)
                 return "You'll no longer be pinged as tickets come in. Message me 'louder' to resume getting those pings."
             else:
                 return "You're already set up not to be pinged as tickets come in. Message me 'louder' to resume getting those pings."
+        elif setting == "loud":
+            if user_id in self.memory['quiet_users']:
+                self.memory['quiet_users'].remove(user_id)
+                return "When you're on, you'll be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
+            else:
+                return "You're already set up to be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
         else:
             raise Exception("set_user_loudness needs 'loud' or 'quiet'")
 
