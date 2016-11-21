@@ -200,6 +200,8 @@ class ScoutBot:
             self.memory['quiet_users'] = set()
         if "ignore_list" not in self.memory:
             self.memory['ignore_list'] = set()
+        if "saw_spam" not in self.memory:
+            self.memory['saw_spam'] = set()
         if "snooze" not in self.memory:
             self.memory['snooze'] = dict()
         if "unsub" not in self.memory:
@@ -417,6 +419,31 @@ class ScoutBot:
                 self.log("+ [%s] %s => handled" % \
                          (ticket['num'],
                           ticket['subject']))
+
+        self.log("*** Scanning for spam...")
+        spam_tickets = timeout(lambda: self.open_conversations(status='spam'),
+                               timeout_duration=HELPSCOUT_TIMEOUT,
+                               default='TIMEOUT')
+        if spam_tickets == 'TIMEOUT':
+            self.log("*** Timed out looking for spam...")
+            return
+        self.helpscout_current_spam = spam_tickets
+
+        saw_spam = self.memory['saw_spam']
+        for ticket in spam_tickets:
+            if int(ticket['num']) in saw_spam:
+                continue
+            self.slackbot_ignore_spam(ticket['num'])
+
+            self.log("*** [%s] %s => new spam" % \
+                         (ticket['num'],
+                          ticket['subject']))
+
+            user =  self.support_now(just_name=True)
+            if user and not self._support_closed():
+                self.slackbot_direct_message(user, "New spam ticket [<{url}|#{num}>] {subject} - please check if subject not obviously spammy.".format(**ticket))
+                self.slackbot_broadcast("New spam ticket [<{url}|#{num}>] {subject} - please check if subject not obviously spammy.".format(**ticket))
+
 
     def _support_closed(self):
         now = datetime.now(tz=TZ)
@@ -692,6 +719,11 @@ class ScoutBot:
         self.memory['ignore_list'] = ignore_list
 
         return "Cool, I'll stop worrying about %s.  To undo respond 'unignore %s'." % (num, num)
+
+    def slackbot_ignore_spam(self, num):
+        ignore_list = self.memory['saw_spam']
+        ignore_list.add(int(num))
+        self.memory['saw_spam'] = ignore_list
 
     def slackbot_unignore_ticket(self, num):
         ignore_list = self.memory['ignore_list']
