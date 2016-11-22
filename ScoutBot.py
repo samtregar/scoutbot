@@ -276,8 +276,8 @@ class ScoutBot:
                 if last_client_msg_at is not None:
                     if (('thanks' in body or 'thank you' in body) and
                         _body_len_minus_sig(body) < 60):
-                        self.log("Ignoring short thanks reply from client: %s"
-                                 % (body))
+                        # self.log("Ignoring short thanks reply from client: %s"
+                        #         % (body))
                         continue
 
                 if (last_client_msg_at is None or \
