@@ -200,6 +200,8 @@ class ScoutBot:
             self.memory['quiet_users'] = set()
         if "ignore_list" not in self.memory:
             self.memory['ignore_list'] = set()
+        if "ignored_at" not in self.memory:
+            self.memory['ignored_at'] = dict()
         if "saw_spam" not in self.memory:
             self.memory['saw_spam'] = set()
         if "snooze" not in self.memory:
@@ -341,17 +343,21 @@ class ScoutBot:
             self.memory['support_user'] = current
             self.slackbot_direct_message(current,
                                          "Ahoy! You're now on support.")
+            self.slackbot_direct_message(current,
+                                         self.helpscout_status())
 
     def helpscout_status(self):
         if not self.helpscout_current_tickets:
-            return "Huh, not sure.  I might be having trouble reaching helpscout. Please find @sam and ask him to fix me."
+            return "Huh, not sure what's up in HS.  I might be having trouble reaching helpscout. Please find @sam and ask him to fix me."
 
         ignore_list = self.memory['ignore_list']
+        ignored_at  = self.memory['ignored_at']
         snooze      = self.memory['snooze']
 
         summary = ["Currently active tickets modified within 24 hours:"]
         for ticket in self.helpscout_current_tickets:
-            if ticket['num'] in ignore_list:
+            if (ticket['num'] in ignore_list and
+                ignored_at[ticket['num']] > ticket['last_client_msg_at']):
                 summary.append("[<{url}|#{num}>] {subject} => *ignored*.".format(**ticket))
                 continue
 
@@ -466,7 +472,8 @@ class ScoutBot:
             return
         
         ignore_list = self.memory['ignore_list']
-        if ticket['num'] in ignore_list:
+        ignored_at = self.memory['ignored_at']
+        if ticket['num'] in ignore_list and ignored_at[ticket['num']] > ticket['last_client_msg_at']:
             self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
             return
 
@@ -497,7 +504,8 @@ class ScoutBot:
             return
 
         ignore_list = self.memory['ignore_list']
-        if ticket['num'] in ignore_list:
+        ignored_at = self.memory['ignored_at']
+        if ticket['num'] in ignore_list and ignored_at[ticket['num']] > ticket['last_client_msg_at']:
             self.log("Ignoring [<{url}|#{num}>], it's on the ignore_list.".format(**ticket))
             return
 
@@ -715,10 +723,15 @@ class ScoutBot:
 
     def slackbot_ignore_ticket(self, num):
         ignore_list = self.memory['ignore_list']
+        ignored_at  = self.memory['ignored_at']
+        
         ignore_list.add(int(num))
-        self.memory['ignore_list'] = ignore_list
+        ignored_at[int(num)] = datetime.utcnow()
 
-        return "Cool, I'll stop worrying about %s.  To undo respond 'unignore %s'." % (num, num)
+        self.memory['ignore_list'] = ignore_list
+        self.memory['ignored_at']  = ignored_at
+
+        return "Cool, I'll stop worrying about %s (until another reply comes in).  To undo respond 'unignore %s'." % (num, num)
 
     def slackbot_ignore_spam(self, num):
         ignore_list = self.memory['saw_spam']
@@ -727,8 +740,13 @@ class ScoutBot:
 
     def slackbot_unignore_ticket(self, num):
         ignore_list = self.memory['ignore_list']
+        ignored_at  = self.memory['ignored_at']
+
         ignore_list.discard(int(num))
+        del ignored_at[int(num)]
+
         self.memory['ignore_list'] = ignore_list
+        self.memory['ignored_at']  = ignored_at
 
         return "Ok, I'll start worrying about %s again.  To undo respond 'ignore %s'." % (num, num)
 
