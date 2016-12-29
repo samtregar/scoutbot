@@ -348,7 +348,7 @@ class ScoutBot:
 
     def helpscout_status(self):
         if not self.helpscout_current_tickets:
-            return "Huh, not sure what's up in HS.  I might be having trouble reaching helpscout. Please find @sam and ask him to fix me."
+            return "I didn't find any active tickets in HelpScout.  Most likely this means there aren't any, but it's also possible I'm having trouble communicating with HelpScout, so you might want to double check."
 
         ignore_list = self.memory['ignore_list']
         ignored_at  = self.memory['ignored_at']
