@@ -10,6 +10,7 @@ import json
 import signal
 import sys
 import shelve
+import unicodedata
 
 # HelpScout API
 import helpscout
@@ -33,6 +34,9 @@ HELPSCOUT_TIMEOUT = 30
 CALENDAR_SCAN_INTERVAL = timedelta(minutes=5)
 
 ANNOYANCE_FREQUENCY = timedelta(minutes=10)
+
+def translate_unicode(str):
+    return unicodedata.normalize('NFKD', unicode(str)).encode('ascii','ignore')
 
 def text2int(textnum, numwords={}):
     if not numwords:
@@ -389,6 +393,9 @@ class ScoutBot:
         self.helpscout_current_tickets = tickets
 
         for ticket in tickets:
+            # unicode in ticket text really makes a mess of everything
+            ticket['subject'] = translate_unicode(ticket['subject'])
+
             if ticket['new']:
                 self.log("*** [%s] %s => new and unclaimed %s" % \
                          (ticket['num'],
@@ -396,9 +403,11 @@ class ScoutBot:
                           ticket['wait_time_human']))
 
                 user =  self.support_now(just_name=True)
-                if user and not self._support_closed() and ticket['num'] not in self.initial_alert_sent and user not in self.memory['quiet_users']:
+                user_id = self.slack_user_names.get(user, 0)
+
+                if user and not self._support_closed() and ticket['num'] not in self.initial_alert_sent and user_id not in self.memory['quiet_users']:
                         self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} was opened.\nRespond 'quieter' to stop these messages (then 'louder' if you want them resumed).  Respond 'help' to see more options.".format(**ticket))
-                        self.initial_alert_sent.add(ticket['num'])
+                        alerts = self.initial_alert_sent.add(ticket['num'])
                         return
 
                 if ticket['wait_time'].total_seconds() > self.max_wait_new_ticket:
@@ -888,17 +897,22 @@ class ScoutBot:
                 return
     
     def set_user_loudness(self, user_id, setting):
-        if 'quiet_users' not in self.memory:
-            self.memory['quiet_users'] = set()
+        quiet = self.memory['quiet_users']
+        
         if setting == "quiet":
-            if user_id not in self.memory['quiet_users']:
-                self.memory['quiet_users'].add(user_id)
+            if user_id not in quiet:
+                self.log("SETTING %r in %r" %  (user_id, self.memory['quiet_users']))
+                quiet.add(user_id)
+                self.memory['quiet_users'] = quiet
+
                 return "You'll no longer be pinged as tickets come in. Message me 'louder' to resume getting those pings."
             else:
                 return "You're already set up not to be pinged as tickets come in. Message me 'louder' to resume getting those pings."
         elif setting == "loud":
             if user_id in self.memory['quiet_users']:
-                self.memory['quiet_users'].remove(user_id)
+                quiet.remove(user_id)
+                self.memory['quiet_users'] = quiet
+
                 return "When you're on, you'll be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
             else:
                 return "You're already set up to be pinged as soon as a ticket comes in. Message me 'quieter' to disable."
@@ -1023,7 +1037,7 @@ class ScoutBot:
             # correctly, oddly enough
             self.sc.server.api_call('chat.postMessage',
                                     channel=channel.id,
-                                    text=msg[1],
+                                    text=translate_unicode(msg[1]),
                                     username=self.slack_bot_name,
                                     as_user=True)
 
