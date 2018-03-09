@@ -465,7 +465,8 @@ class ScoutBot:
         if now.weekday() not in self.support_open_days:
             return True
 
-        on_now = self.support_now(just_name=True).lower()
+        on_now = self.support_now(just_name=True) or ""
+        on_now = on_now.lower()
         if "closed" in on_now or "holiday" in on_now:
             return True
 
