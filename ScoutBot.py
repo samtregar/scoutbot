@@ -343,13 +343,17 @@ class ScoutBot:
     def shift_change(self):
         current = self.support_now(just_name=True)
         previous = self.memory['support_user']
-        if current and current != previous:
+        if current != previous:
             self.memory['support_user'] = current
-            self.slackbot_direct_message(current,
-                                         "Ahoy! You're now on support.")
-            self.slackbot_direct_message(current,
-                                         self.helpscout_status())
-
+            if current:
+                self.slackbot_direct_message(current,
+                                             "Ahoy! You're now on support.")
+                self.slackbot_direct_message(current,
+                                             self.helpscout_status())
+            if previous:
+                self.slackbot_direct_message(
+                    previous, "Great job - your support shift is over!")
+             
     def helpscout_status(self):
         if not self.helpscout_current_tickets:
             return "I didn't find any active tickets in HelpScout.  Most likely this means there aren't any, but it's also possible I'm having trouble communicating with HelpScout, so you might want to double check."
