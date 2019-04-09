@@ -265,6 +265,7 @@ class ScoutBot:
         last_owner_email = None
         first = True
         last_body = None
+
         for thread in threads:
             created_at = dateutil.parser.parse(thread.createdat)\
                          .replace(tzinfo=None)
@@ -272,6 +273,10 @@ class ScoutBot:
             email = thread.createdby['email']
             body = thread.body.lower() if thread.body else ''
             last_body = body
+            
+            # ignore drafts so we keep getting reminders
+            if thread.state == 'draft':
+                continue
             
             if email.endswith(self.support_domain):
                 if (last_support_msg_at is None or \
