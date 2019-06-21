@@ -181,9 +181,6 @@ class ScoutBot:
         channels = json.loads(config.get('slack', 'channels'))
         self.slack_channels = channels
 
-        log_channels = json.loads(config.get('slack', 'log_channels'))
-        self.slack_log_channels = log_channels
-
         if self.hs_api_key is None:
             raise Exception("Missing api_key config value!")
 
@@ -412,7 +409,7 @@ class ScoutBot:
                           ticket['wait_time_human']))
 
                 user =  self.support_now(just_name=True)
-                user_id = self.slack_user_names.get(user, 0)
+                user_id = self.slack_user_names.get(user.lower(), 0)
 
                 if user and not self._support_closed() and ticket['num'] not in self.initial_alert_sent and user_id not in self.memory['quiet_users']:
                         self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} was opened.\nRespond 'quieter' to stop these messages (then 'louder' if you want them resumed).  Respond 'help' to see more options.".format(**ticket))
@@ -545,8 +542,6 @@ class ScoutBot:
         self.last_alert_everyone_on_ticket[ticket['num']] = datetime.utcnow()
 
     def log(self, msg):
-        if self.slack_connected:
-            self.slackbot_log(msg)
         print "%s: %s" % (datetime.now(), msg)
 
     def support_now(self, just_name=False):
@@ -589,6 +584,10 @@ class ScoutBot:
 
         full = orig.lower()
         parts = re.split(r'\W+', full)
+
+        # look for match on full name
+        if full.lower() in self.slack_user_names:
+            return "<@%s>" % (self.slack_user_names[full.lower()],)
 
         # look for a match on first name
         if parts[0] in self.slack_user_names:
@@ -1031,10 +1030,6 @@ class ScoutBot:
             self.slack_stack.append((dm_channel['channel']['id'], msg))
         else:
             self.log("Failed to open IM channel to %r: %r" % (user, dm_channel))
-
-    def slackbot_log(self, msg):
-        for channel in self.slack_log_channels:
-            self.slack_stack.append((channel, msg))
 
     def slackbot_output(self):
         while len(self.slack_stack):
