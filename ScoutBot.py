@@ -409,7 +409,7 @@ class ScoutBot:
                           ticket['wait_time_human']))
 
                 user =  self.support_now(just_name=True)
-                user_id = self.slack_user_names.get(user.lower(), 0)
+                user_id = self.slack_user_names.get(user.lower() if user else None, 0)
 
                 if user and not self._support_closed() and ticket['num'] not in self.initial_alert_sent and user_id not in self.memory['quiet_users']:
                         self.slackbot_direct_message(user, "Ticket [<{url}|#{num}>] {subject} was opened.\nRespond 'quieter' to stop these messages (then 'louder' if you want them resumed).  Respond 'help' to see more options.".format(**ticket))
