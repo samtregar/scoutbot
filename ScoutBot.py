@@ -1030,6 +1030,7 @@ class ScoutBot:
             self.slack_stack.append((dm_channel['channel']['id'], msg))
         else:
             self.log("Failed to open IM channel to %r: %r" % (user, dm_channel))
+            self.slackbot_broadcast("Tried to IM %r but couldn't!  If you see them, can you tell them '%s' for me?" % (user, msg))
 
     def slackbot_output(self):
         while len(self.slack_stack):
