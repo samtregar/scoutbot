@@ -345,6 +345,7 @@ class ScoutBot:
     def shift_change(self):
         current = self.support_now(just_name=True)
         previous = self.memory['support_user']
+
         if current != previous:
             self.memory['support_user'] = current
             if current:
@@ -1016,6 +1017,10 @@ class ScoutBot:
             self.slack_stack.append((channel, msg))
 
     def slackbot_direct_message(self, user, msg):
+        # holiday is lazy time, don't bother anyone
+        if "closed" in user or "holiday" in user:
+            return
+
         # strip out slack formatting
         user = re.sub(r'[\<\>@]+', '', user)
 
