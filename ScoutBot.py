@@ -1018,7 +1018,7 @@ class ScoutBot:
 
     def slackbot_direct_message(self, user, msg):
         # holiday is lazy time, don't bother anyone
-        if "closed" in user or "holiday" in user:
+        if "closed" in user.lower() or "holiday" in user.lower():
             return
 
         # strip out slack formatting
