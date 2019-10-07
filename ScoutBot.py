@@ -13,7 +13,7 @@ import shelve
 import unicodedata
 
 # HelpScout API
-import helpscout
+from helpscout import HelpScout
 
 # Google Calendar API modules
 import httplib2
@@ -67,17 +67,6 @@ def text2int(textnum, numwords={}):
             current = 0
 
     return result + current
-
-
-# helper to deal with bizarre helpscout paging interface - you have to
-# call each method multiple times until it returns nothing.
-def helpscout_pager(meth, *args, **kwargs):
-    while True:
-        page = meth(*args, **kwargs)
-        if page is None or page.items is None or len(page.items) == 0:
-            return
-        for item in page.items:
-            yield item
 
 
 # make a human-readable timedelta, from
@@ -148,6 +137,10 @@ class ScoutBot:
 
         self.hs_api_key                 = config.get('helpscout',
                                                      'api_key')
+        self.hs_app_secret              = config.get('helpscout',
+                                                     'app_secret')
+        self.hs_app_id                  = config.get('helpscout',
+                                                     'app_id')
         self.helpscout_current_tickets  = None
         self.last_helpscout_scan        = datetime.utcnow() - \
                                           HELPSCOUT_SCAN_INTERVAL
@@ -181,11 +174,10 @@ class ScoutBot:
         channels = json.loads(config.get('slack', 'channels'))
         self.slack_channels = channels
 
-        if self.hs_api_key is None:
-            raise Exception("Missing api_key config value!")
+        if not (self.hs_app_secret and self.hs_app_id):
+            raise Exception("Missing helpscout config value(s)!")
 
-        self.client = helpscout.Client()
-        self.client.api_key = self.hs_api_key
+        self.client = HelpScout(self.hs_app_id, self.hs_app_secret)
 
         self.calendar = []
         self.calendar_refreshed_at = None
@@ -222,41 +214,27 @@ class ScoutBot:
 
     def open_conversations(self, hours=24, status='active'):
         client = self.client
-
-        # this API wrapper has the wackiest paging system...  Gotta
-        # clear it here or subsequent calls will silently find
-        # nothing!
-        client.clearstate()
-        
         results = []
-        for mailbox in list(helpscout_pager(client.mailboxes)):
-            # look back up to 6 hours by default
-            start_date = datetime.utcnow() - timedelta(hours = hours)
-            start_date = start_date.replace(microsecond=0).isoformat() + 'Z'
-
-            client.clearstate()
-            for conv in helpscout_pager(client.conversations_for_mailbox,
-                                        mailbox.id,
-                                        status=status,
-                                        modifiedSince=start_date):
-                results.append(self.parse_conversation(conv))
+        start_date = datetime.utcnow() - timedelta(hours = hours)
+        start_date = start_date.replace(microsecond=0).isoformat() + 'Z'
+        for conv in client.conversations.get(params=dict(status="active", modifiedSince=start_date)):
+            results.append(self.parse_conversation(conv))
         return results
 
     def parse_conversation(self, conv):
         client = self.client
-
         data = dict(
-            owner      = conv.owner,
+            owner      = conv.assignee,
             id         = conv.id,
             num        = conv.number,
             subject    = conv.subject,
-            folder_id  = conv.folderid,
+            folder_id  = conv.folderId,
             url        = 'https://secure.helpscout.net/conversation/%s' % (conv.id,),
-            created_at = dateutil.parser.parse(conv.createdat).replace(tzinfo=None)
+            created_at = dateutil.parser.parse(conv.createdAt).replace(tzinfo=None)
         )
 
         # refetch to get thread info, needed to figure out last reply
-        threads = client.conversation(conv.id).threads
+        threads = client.conversations[conv.id].threads.get()[0].threads
         last_support_msg_at = None
         last_client_msg_at = None
         last_owner_email = None
@@ -264,15 +242,15 @@ class ScoutBot:
         last_body = None
 
         for thread in threads:
-            created_at = dateutil.parser.parse(thread.createdat)\
+            created_at = dateutil.parser.parse(thread['createdAt'])\
                          .replace(tzinfo=None)
 
-            email = thread.createdby['email']
-            body = thread.body.lower() if thread.body else ''
+            email = thread['createdBy']['email']
+            body = thread['body'].lower() if thread['body'] else ''
             last_body = body
             
             # ignore drafts so we keep getting reminders
-            if thread.state == 'draft':
+            if thread['state'] == 'draft':
                 continue
             
             if email.endswith(self.support_domain):
@@ -969,6 +947,7 @@ class ScoutBot:
         """
 
     def slackbot_link_hs(self, msg, num):
+        " Get description and link to HS conversation  "
         if num in self.last_hs_link:
             if ((datetime.utcnow() - self.last_hs_link[num])
                 < ANNOYANCE_FREQUENCY):
@@ -976,14 +955,9 @@ class ScoutBot:
 
         client = self.client
 
-        # this API wrapper has the wackiest paging system...  Gotta
-        # clear it here or subsequent calls will silently find
-        # nothing!
-        client.clearstate()
-
         url = None
         subject = None
-        for result in helpscout_pager(client.search, query="number:%s" % num):
+        for result in client.conversations.get(params=dict(number=num)):
             if int(result.number) == int(num):
                 url = "https://secure.helpscout.net/conversation/%s" % result.id
                 subject = result.subject
