@@ -217,14 +217,14 @@ class ScoutBot:
         results = []
         start_date = datetime.utcnow() - timedelta(hours = hours)
         start_date = start_date.replace(microsecond=0).isoformat() + 'Z'
-        for conv in client.conversations.get(params=dict(status="active", modifiedSince=start_date)):
+        for conv in client.conversations.get(params=dict(status=status, modifiedSince=start_date)):
             results.append(self.parse_conversation(conv))
         return results
 
     def parse_conversation(self, conv):
         client = self.client
         data = dict(
-            owner      = conv.assignee,
+            owner      = getattr(conv, 'assignee', ''),
             id         = conv.id,
             num        = conv.number,
             subject    = conv.subject,
@@ -246,11 +246,11 @@ class ScoutBot:
                          .replace(tzinfo=None)
 
             email = thread['createdBy']['email']
-            body = thread['body'].lower() if thread['body'] else ''
+            body = thread.get('body', '').lower()
             last_body = body
             
             # ignore drafts so we keep getting reminders
-            if thread['state'] == 'draft':
+            if thread.get('state', '') == 'draft' or thread.get('type', '') == 'lineitem':
                 continue
             
             if email.endswith(self.support_domain):
