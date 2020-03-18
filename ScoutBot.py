@@ -11,6 +11,7 @@ import signal
 import sys
 import shelve
 import unicodedata
+import pypd
 
 # HelpScout API
 from helpscout import HelpScout
@@ -34,6 +35,8 @@ HELPSCOUT_TIMEOUT = 30
 CALENDAR_SCAN_INTERVAL = timedelta(minutes=5)
 
 ANNOYANCE_FREQUENCY = timedelta(minutes=10)
+
+USE_PAGERDUTY = True
 
 def translate_unicode(str):
     return unicodedata.normalize('NFKD', unicode(str)).encode('ascii','ignore')
@@ -161,6 +164,9 @@ class ScoutBot:
         self.slack_last_ping            = 0
         self.slack_stack                = []
         self.slack_connected            = False
+
+        self.pagerduty_api_key = config.get('pagerduty','api_key')
+        pypd.api_key = self.pagerduty_api_key
 
         self.support_open_at   = dateutil.parser.parse(
             config.get('scoutbot', 'support_open_at'))
@@ -524,18 +530,40 @@ class ScoutBot:
         print "%s: %s" % (datetime.now(), msg)
 
     def support_now(self, just_name=False):
-        cal = self.refresh_support_calendar()
-        now = datetime.now(tz=TZ)
-        for c in cal:
-            if now >= c[0] and now <= c[1]:
+        if USE_PAGERDUTY:
+            if not hasattr(self, 'pd_policy'):
+                self.pd_policy = pypd.EscalationPolicy.find_one(
+                    name='ActionKit Support Requests')
+            on_call = pypd.OnCall.find_one(
+                escalation_policy_ids=[self.pd_policy.id])
+
+            # nobody on call!
+            if not on_call:
                 if just_name:
-                    return c[2]
-                return "%s is on support now." % (c[2],)
-        if just_name:
-            return None
-        return "Nobody is on support now! :fire::fire::fire:"
+                    return None
+                return "Nobody is on support now! :fire::fire::fire:"
+
+            # got someone, return name or sentence
+            user = self.slack_name_for_full_name(on_call['user']['summary'])
+            if just_name:
+                return user
+            return "%s is on support now." % (user,)
+        else:
+            cal = self.refresh_support_calendar()
+            now = datetime.now(tz=TZ)
+            for c in cal:
+                if now >= c[0] and now <= c[1]:
+                    if just_name:
+                        return c[2]
+                    return "%s is on support now." % (c[2],)
+            if just_name:
+                return None
+            return "Nobody is on support now! :fire::fire::fire:"
 
     def support_day(self, offset=0):
+        if USE_PAGERDUTY:
+            return "Unavailable via PagerDuty - ask Sam to implement."
+        
         cal = self.refresh_support_calendar()
         now = datetime.now(tz=TZ) + timedelta(days=offset)
 
@@ -591,6 +619,9 @@ class ScoutBot:
 
     # pull a fresh calendar from Google periodically
     def refresh_support_calendar(self, use_cache=True):
+        if USE_PAGERDUTY:
+            return
+
         if (use_cache and
             len(self.calendar) and
             self.calendar_refreshed_at and
@@ -690,13 +721,14 @@ class ScoutBot:
                     HELPSCOUT_SCAN_INTERVAL):
                     self.last_helpscout_scan = datetime.utcnow()
                     self.watch(once=True)
+                    
+                if not USE_PAGERDUTY:
+                    if ((datetime.utcnow() - self.last_calender_scan) >
+                        CALENDAR_SCAN_INTERVAL):
+                        self.last_calender_scan = datetime.utcnow()
+                        self.refresh_support_calendar()
 
-                if ((datetime.utcnow() - self.last_calender_scan) >
-                    CALENDAR_SCAN_INTERVAL):
-                    self.last_calender_scan = datetime.utcnow()
-                    self.refresh_support_calendar()
-
-                sleep(1)
+                sleep(0.25)
         else:
             print "Connection Failed, invalid token?"
 
