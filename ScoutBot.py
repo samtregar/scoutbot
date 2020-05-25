@@ -12,6 +12,7 @@ import sys
 import shelve
 import unicodedata
 import pypd
+import holidays
 
 # HelpScout API
 from helpscout import HelpScout
@@ -37,6 +38,18 @@ CALENDAR_SCAN_INTERVAL = timedelta(minutes=5)
 ANNOYANCE_FREQUENCY = timedelta(minutes=10)
 
 USE_PAGERDUTY = True
+
+# setup a holiday detection system - removing Columbus Day and adding
+# in the extra days around T-day, Christmas and New Years
+HOLIDAY = holidays.US(years=datetime.now().year)
+HOLIDAY.pop([d for (d, n) in HOLIDAY.items() if n == 'Columbus Day'][0])
+HOLIDAY.append({
+    [d for (d, n) in HOLIDAY.items() if n == 'Thanksgiving'][0] + timedelta(days=1): 'Day after Thanksgiving'})
+HOLIDAY.append({
+    [d for (d, n) in HOLIDAY.items() if n == 'Christmas Day'][0] - timedelta(days=1): 'Christmas Eve'})
+HOLIDAY.append({
+    [d for (d, n) in HOLIDAY.items() if n == "New Year's Day"][0] - timedelta(days=1): "New Year's Eve"})
+
 
 def translate_unicode(str):
     return unicodedata.normalize('NFKD', unicode(str)).encode('ascii','ignore')
@@ -456,9 +469,7 @@ class ScoutBot:
         if now.weekday() not in self.support_open_days:
             return True
 
-        on_now = self.support_now(just_name=True) or ""
-        on_now = on_now.lower()
-        if "closed" in on_now or "holiday" in on_now:
+        if now.date() in HOLIDAY:
             return True
 
         if (now.hour >= self.support_open_at.hour and
@@ -1023,8 +1034,8 @@ class ScoutBot:
             self.slack_stack.append((channel, msg))
 
     def slackbot_direct_message(self, user, msg):
-        # holiday is lazy time, don't bother anyone
-        if "closed" in user.lower() or "holiday" in user.lower():
+        now = datetime.now(tz=TZ)
+        if now.date() in HOLIDAY:
             return
 
         # strip out slack formatting
