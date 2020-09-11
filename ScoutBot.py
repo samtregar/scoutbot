@@ -162,6 +162,8 @@ class ScoutBot:
                                           HELPSCOUT_SCAN_INTERVAL
         self.support_domain             = config.get('scoutbot',
                                                      'support_domain')
+        self.other_support_people       = config.get('scoutbot',
+                                                     'other_support_people').split(',')
         self.max_wait_new_ticket        = int(config.get('scoutbot',
                                                          'max_wait_new_ticket'))
         self.max_wait_response_or_close = int(config.get('scoutbot',
@@ -272,7 +274,7 @@ class ScoutBot:
             if thread.get('state', '') == 'draft' or thread.get('type', '') == 'lineitem':
                 continue
             
-            if email.endswith(self.support_domain):
+            if email.endswith(self.support_domain) or email in self.other_support_people:
                 if (last_support_msg_at is None or \
                     last_support_msg_at < created_at):
                     last_support_msg_at = created_at
