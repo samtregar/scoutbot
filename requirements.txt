@@ -14,7 +14,7 @@ simplejson==3.8.0
 six==1.9.0
 slackclient==0.16
 uritemplate==0.6
-urllib3==1.12
+urllib3==1.26.5
 websocket-client==0.32.0
 wsgiref==0.1.2
 holidays==0.10.2
